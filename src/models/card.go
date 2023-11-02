@@ -2,7 +2,7 @@ package models
 
 import (
 	"fmt"
-	"hands/domain/helpers"
+	"hands/src/helpers"
 	"regexp"
 )
 

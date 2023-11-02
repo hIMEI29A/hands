@@ -2,10 +2,9 @@ package models
 
 import (
 	"fmt"
+	"hands/src/helpers"
 	"sort"
 	"sync"
-
-	"hands/domain/helpers"
 )
 
 type TableType string
@@ -121,15 +120,15 @@ func (t *Table) GetSecondPosition() *Player {
 	return t.Players[t.Dealer+2]
 }
 
-func (t *Table) GetPlayersHand(pocket []*Card) *HandRaw {
+func (t *Table) GetPlayersHand(pocket []*Card) *Hand {
 	m := GetMaxHandWithBoard(NewStringSliceFromCards(t.Board), NewStringSliceFromCards(pocket))
 
 	return m
 }
 
 func (t *Table) ResolveWinner() string {
-	playersHandsMap := make(map[string]*HandRaw)
-	hands := make([]*HandRaw, 0)
+	playersHandsMap := make(map[string]*Hand)
+	hands := make([]*Hand, 0)
 
 	for _, player := range t.Players {
 		h := t.GetPlayersHand(player.PocketCards)
