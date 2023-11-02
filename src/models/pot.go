@@ -23,35 +23,35 @@ func NewPot(tag string) *Pot {
 	}
 }
 
-func (p *Pot) Register(playerName string) error {
-	if _, ok := p.PlayersChips[playerName]; !ok {
-		return fmt.Errorf("Player with name %s is in this game already", playerName)
+func (p *Pot) Register(playerID string) error {
+	if _, ok := p.PlayersChips[playerID]; !ok {
+		return fmt.Errorf("Player with ID %s is in this game already", playerID)
 	}
 
-	p.PlayersChips[playerName] = 0
+	p.PlayersChips[playerID] = 0
 
 	return nil
 }
 
-func (p *Pot) AddPlayerBet(bet Chips, playerName string) (int, error) {
-	if _, ok := p.PlayersChips[playerName]; !ok {
-		return 0, fmt.Errorf("Player with name %s is not in this game", playerName)
+func (p *Pot) AddPlayerBet(bet Chips, playerID string) (int, error) {
+	if _, ok := p.PlayersChips[playerID]; !ok {
+		return 0, fmt.Errorf("Player with ID %s is not in this game", playerID)
 	}
 
-	p.PlayersChips[playerName] += bet
+	p.PlayersChips[playerID] += bet
 	p.TotalChipsNum += bet
 
-	val := p.PlayersChips[playerName]
+	val := p.PlayersChips[playerID]
 
 	return int(val), nil
 }
 
-func (p *Pot) GetPlayerAmount(playerName string) (int, error) {
-	if _, ok := p.PlayersChips[playerName]; !ok {
-		return 0, fmt.Errorf("Player with name %s is not in this game", playerName)
+func (p *Pot) GetPlayerAmount(playerID string) (int, error) {
+	if _, ok := p.PlayersChips[playerID]; !ok {
+		return 0, fmt.Errorf("Player with ID %s is not in this game", playerID)
 	}
 
-	val := p.PlayersChips[playerName]
+	val := p.PlayersChips[playerID]
 
 	return int(val), nil
 }

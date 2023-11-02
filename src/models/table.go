@@ -16,9 +16,14 @@ const (
 
 const CardsOnFlopNumber = 3
 
+type TableRules struct {
+	// TODO
+}
+
 type Table struct {
 	ID                string
 	Type              TableType
+	TableRules        *TableRules
 	Name              string
 	Pot               *Pot
 	Players           []*Player
@@ -38,6 +43,7 @@ func NewTable(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) 
 	return &Table{
 		// ID TODO
 		Type:              tableType,
+		Name:              name,
 		Pot:               NewPot(tag),
 		Players:           make([]*Player, 0),
 		MaxPlayersNum:     maxPlayersNum,
@@ -51,9 +57,9 @@ func NewTable(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) 
 	}
 }
 
-func (t *Table) GetPlayerByName(name string) *Player {
+func (t *Table) GetPlayerByID(id string) *Player {
 	for _, p := range t.Players {
-		if p.Name == name {
+		if p.ID == id {
 			return p
 		}
 	}
@@ -66,8 +72,8 @@ func (t *Table) Register(player *Player) error {
 	defer t.m.Unlock()
 
 	for _, p := range t.Players {
-		if p.Name == player.Name {
-			return fmt.Errorf("Player with name %s is in this game already", player.Name)
+		if p.ID == player.ID {
+			return fmt.Errorf("Player with ID %s is in this game already", player.ID)
 		}
 	}
 
@@ -77,7 +83,7 @@ func (t *Table) Register(player *Player) error {
 
 	t.Players = append(t.Players, player)
 
-	return t.Pot.Register(player.Name)
+	return t.Pot.Register(player.ID)
 }
 
 func (t *Table) SetDealer() int {
@@ -120,36 +126,66 @@ func (t *Table) GetSecondPosition() *Player {
 	return t.Players[t.Dealer+2]
 }
 
-func (t *Table) GetPlayersHand(pocket []*Card) *Hand {
-	m := GetMaxHandWithBoard(NewStringSliceFromCards(t.Board), NewStringSliceFromCards(pocket))
-
-	return m
+func (t *Table) GetPlayersHand(pocket []*Card) (*Hand, error) {
+	return GetMaxHandWithBoard(NewStringSliceFromCards(t.Board), NewStringSliceFromCards(pocket))
 }
 
-func (t *Table) ResolveWinner() string {
+// ResolveWinner возвращает слайс с id игроков - обладателей максимальных рук
+func (t *Table) ResolveWinner() ([]string, error) {
 	playersHandsMap := make(map[string]*Hand)
 	hands := make([]*Hand, 0)
 
 	for _, player := range t.Players {
-		h := t.GetPlayersHand(player.PocketCards)
+		h, err := t.GetPlayersHand(player.PocketCards)
+		if err != nil {
+			return nil, err
+		}
 
-		fmt.Println(h)
+		fmt.Println(h) // TODO remove
 
 		hands = append(hands, h)
-		playersHandsMap[player.Name] = h
+		playersHandsMap[player.ID] = h
 	}
 
 	sort.Slice(hands, func(i, j int) bool {
 		return hands[i].Compare(hands[j]) < 0
 	})
 
-	for name, hand := range playersHandsMap {
-		if hand.Same(hands[len(hands)-1]) {
-			return name
+	similar := make([]*Hand, 0)
+	lastNum, preLastNum := len(hands)-1, len(hands)-2
+
+	// если только одна максимальная рука
+	if hands[lastNum].Compare(hands[preLastNum]) != 0 {
+		for id, hand := range playersHandsMap {
+			if hand.Same(hands[lastNum]) {
+				return []string{id}, nil
+			}
 		}
+	} else {
+		result := make([]string, 0)
+
+		for hands[lastNum].Compare(hands[preLastNum]) == 0 {
+			similar = append(similar, hands[lastNum], hands[preLastNum])
+			if preLastNum == 0 { // len(hands) == 2
+				break
+			}
+
+			lastNum--
+			preLastNum--
+		}
+
+		for id, hand := range playersHandsMap {
+			for _, h := range similar {
+				if hand.Same(h) {
+					result = append(result, id)
+				}
+			}
+		}
+
+		return result, nil
 	}
 
-	return ""
+	return nil, nil
 }
 
 func (t *Table) PreFlop() (*Table, error) {
@@ -160,7 +196,7 @@ func (t *Table) PreFlop() (*Table, error) {
 		return nil, err
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < PocketSize; i++ {
 		for _, player := range t.Players {
 			card, err := t.Deck.Card()
 			if err != nil {
@@ -232,7 +268,7 @@ func (t *Table) Blinds() (*Table, error) {
 		return nil, err
 	}
 
-	if _, err = t.Pot.AddPlayerBet(smallBlind, small.Name); err != nil {
+	if _, err = t.Pot.AddPlayerBet(smallBlind, small.ID); err != nil {
 		return nil, err
 	}
 
@@ -241,7 +277,7 @@ func (t *Table) Blinds() (*Table, error) {
 		return nil, err
 	}
 
-	if _, err = t.Pot.AddPlayerBet(bigBlind, small.Name); err != nil {
+	if _, err = t.Pot.AddPlayerBet(bigBlind, big.ID); err != nil {
 		return nil, err
 	}
 
