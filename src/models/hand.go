@@ -2,12 +2,18 @@ package models
 
 import (
 	"errors"
-	"hands/src/helpers"
 	"sort"
+
+	"hands/src/helpers"
 )
 
-// HandLength - количество карт в комбинации
-const HandLength = 5
+const (
+	// HandSize - количество карт в комбинации
+	HandSize = 5
+
+	// PocketSize - кол-во карт на руках у игрока
+	PocketSize = 2
+)
 
 // HandValue - значение комбинации
 type HandValue int
@@ -27,8 +33,14 @@ const (
 
 /* Operations with cards as []string and []*Cards */
 
-func getMaxHand(cards []string) *Hand {
-	combos := helpers.GetCombinations(cards, HandLength)
+// getMaxHand определяет максимальную руку из набора комбинаций из 7 карт по 5.
+// Возвращает ошибку, если len(cards) != 7
+func getMaxHand(cards []string) (*Hand, error) {
+	if len(cards) != HandSize+PocketSize {
+		return nil, errors.New("Wrong number of cards to calculate combinations")
+	}
+
+	combos := helpers.GetCombinations(cards, HandSize)
 	hands := make([]*Hand, len(combos))
 
 	for i, c := range combos {
@@ -39,7 +51,7 @@ func getMaxHand(cards []string) *Hand {
 		return hands[i].Compare(hands[j]) < 0
 	})
 
-	return hands[len(hands)-1]
+	return hands[len(hands)-1], nil
 }
 
 func max(cards []*Card) *Card {
@@ -90,18 +102,6 @@ func inSlice(cards []*Card, card *Card) bool {
 	return false
 }
 
-func ValidateHand(hand []*Card) error {
-	if len(hand) > 5 {
-		return errors.New("Hand must contains 5 cards only")
-	}
-
-	if countDuplicates(hand) > 0 {
-		return errors.New("Hand must not contains duplicates")
-	}
-
-	return nil
-}
-
 /* Hand */
 
 // Hand  - покерная комбинация из пяти карт.
@@ -118,6 +118,18 @@ func ValidateHand(hand []*Card) error {
 //	}
 type Hand struct {
 	cardsMap map[string]int
+}
+
+func ValidateHand(hand []*Card) error {
+	if len(hand) != 5 {
+		return errors.New("Hand must contains 5 cards only")
+	}
+
+	if countDuplicates(hand) > 0 {
+		return errors.New("Hand must not contains duplicates")
+	}
+
+	return nil
 }
 
 func NewHandFromCards(cards []*Card) *Hand {
@@ -409,7 +421,7 @@ func Compare(one, other *Hand) int {
 	return one.Compare(other)
 }
 
-func GetMaxHandWithBoard(boad, pocket []string) *Hand {
+func GetMaxHandWithBoard(boad, pocket []string) (*Hand, error) {
 	cards := append(boad, pocket...)
 
 	return getMaxHand(cards)
