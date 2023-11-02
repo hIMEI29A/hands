@@ -8,6 +8,7 @@ func NewEofError() EofError {
 	return EofError{}
 }
 
+// EofError - ошибка, возникающая при попытке получения карты из слайса с нулевой длиной.
 type EofError struct {
 }
 
@@ -37,6 +38,7 @@ func Shuffle() *Deck {
 	return deck
 }
 
+// Deck представляет карточную колоду
 type Deck struct {
 	cards []*Card
 }
@@ -45,6 +47,8 @@ func (d *Deck) randomCard() *Card {
 	return NewRandomCard()
 }
 
+// pop удаляет последний элемент слайса cards (верхнюю карту в колоде) и возвращает его.
+// Возвращает ошибку, если длина cards равна 0.
 func (d *Deck) pop() (*Card, error) {
 	if len(d.cards) == 0 {
 		return nil, NewEofError()
@@ -57,10 +61,12 @@ func (d *Deck) pop() (*Card, error) {
 	return card, nil
 }
 
+// Card возвращает последнюю карту в колоде, или ошибку в случае, если карт в колоде нет, т.е длина cards равна 0.
 func (d *Deck) Card() (*Card, error) {
 	return d.pop()
 }
 
+// Discard удаляет последнюю карту в колоде без получения ее значения. Возвращает ошибку в случае, если карт в колоде нет, т.е длина cards равна 0.
 func (d *Deck) Discard() error {
 	_, err := d.pop()
 
