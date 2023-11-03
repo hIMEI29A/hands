@@ -165,8 +165,6 @@ func (t *Table) ResolveWinner() ([]string, error) {
 			return nil, err
 		}
 
-		fmt.Println(h) // TODO remove
-
 		hands = append(hands, h)
 		playersHandsMap[player.ID] = h
 	}
@@ -188,6 +186,7 @@ func (t *Table) ResolveWinner() ([]string, error) {
 	} else {
 		result := make([]string, 0)
 
+		// перебираем все руки, имеющие максимальное значение
 		for hands[lastNum].Compare(hands[preLastNum]) == 0 {
 			similar = append(similar, hands[lastNum], hands[preLastNum])
 			if preLastNum == 0 { // len(hands) == 2
