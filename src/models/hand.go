@@ -346,15 +346,21 @@ func (h *Hand) GetFour() (hand []*Card) {
 
 // HasFlush определяет, является ли рука Flush
 func (h *Hand) HasFlush() bool {
-	firstSuite := &CardSuite{
-		Color: Red,
-		Suite: Hearts,
+	n := 0
+
+	firstCard := ""
+
+	for card := range h.cardsMap {
+		firstCard = card
+		if n == 0 {
+			break
+		}
 	}
 
 	ok := true
 
 	for card := range h.cardsMap {
-		ok = ok && NewCardFromString(card).Suite.Compare(firstSuite)
+		ok = ok && NewCardFromString(card).Suite.Compare(NewCardFromString(firstCard).Suite)
 	}
 
 	return ok
