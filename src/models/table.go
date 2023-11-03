@@ -165,8 +165,6 @@ func (t *Table) ResolveWinner() ([]string, error) {
 			return nil, err
 		}
 
-		fmt.Println(h) // TODO remove
-
 		hands = append(hands, h)
 		playersHandsMap[player.ID] = h
 	}
