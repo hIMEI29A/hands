@@ -31,7 +31,7 @@ const (
 	RoyalFlushHand                     // Роял-флэш
 )
 
-/* Operations with cards as []string and []*Cards */
+/* Операции с наборами карт, представленными как []string и []*Cards */
 
 // getMaxHand определяет максимальную руку из набора комбинаций из 7 карт по 5.
 // Возвращает ошибку, если len(cards) != 7

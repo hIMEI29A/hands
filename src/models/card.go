@@ -15,7 +15,7 @@ func cardValueFromString(s string) CardValue {
 		return v
 	}
 
-	for i, v := range cardValues {
+	for i, v := range cardValuesStrings {
 		if v == s {
 			cv = CardValue(i + 2)
 		}
@@ -24,7 +24,7 @@ func cardValueFromString(s string) CardValue {
 	return cv
 }
 
-var cardValues = []string{
+var cardValuesStrings = []string{
 	"2",
 	"3",
 	"4",
@@ -68,8 +68,24 @@ const (
 	Ace
 )
 
+var CardValues = []CardValue{
+	Two,
+	Three,
+	Four,
+	Five,
+	Six,
+	Seven,
+	Eight,
+	Nine,
+	Ten,
+	Jack,
+	Queen,
+	King,
+	Ace,
+}
+
 func (cv CardValue) String() string {
-	return cardValues[cv-2]
+	return cardValuesStrings[cv-2]
 }
 
 func NewCardValue(num int) CardValue {

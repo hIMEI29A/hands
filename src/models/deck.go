@@ -1,5 +1,7 @@
 package models
 
+import "hands/src/helpers"
+
 const DeckLength = 52
 
 const EOF = "eof"
@@ -16,31 +18,64 @@ func (e EofError) Error() string {
 	return EOF
 }
 
+// Deck представляет карточную колоду
+type Deck struct {
+	cards []*Card
+}
+
 func NewDeck() *Deck {
 	return &Deck{cards: make([]*Card, 0)}
 }
 
-func Shuffle() *Deck {
-	seen := make(map[string]struct{})
+// makeOrderedCards возвращает []*Card, заполненный картами, упорядоченными по мастям и значениям
+//
+//	[]*Card{
+//		"2H".
+//		"2D".
+//		"2S".
+//		"2C".
+//		"3H".
+//		"3D".
+//		...
+//		"AC".
+//	}
+func makeOrderedCards() []*Card {
+	cards := make([]*Card, 0)
 
-	deck := &Deck{
-		cards: make([]*Card, 0),
-	}
-
-	for i := 0; i < DeckLength; i++ {
-		card := deck.randomCard()
-		if _, ok := seen[card.String()]; !ok {
-			deck.cards = append(deck.cards, card)
-			seen[card.String()] = struct{}{}
+	for _, suite := range Suites {
+		for _, cardValue := range CardValues {
+			cards = append(cards, &Card{
+				Value: cardValue,
+				Suite: &CardSuite{
+					Color: suite.Color(),
+					Suite: suite,
+				},
+			})
 		}
 	}
 
-	return deck
+	return cards
 }
 
-// Deck представляет карточную колоду
-type Deck struct {
-	cards []*Card
+// Shuffle заполняет слайс d.cards уникальными случайными значениями из полного упорядоченного набора карт.
+// Возвращает d
+func (d *Deck) Shuffle() *Deck {
+	control := make(map[int]struct{})
+	orderedCards := makeOrderedCards()
+
+	d.cards = make([]*Card, len(orderedCards))
+
+	for i := 0; i < len(orderedCards); i++ {
+		num := helpers.GenerateRandomNumInRange(len(orderedCards))
+
+		if _, ok := control[num]; !ok {
+			control[num] = struct{}{}
+
+			d.cards[i] = orderedCards[num]
+		}
+	}
+
+	return d
 }
 
 func (d *Deck) randomCard() *Card {
