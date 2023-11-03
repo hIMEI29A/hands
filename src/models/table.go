@@ -20,6 +20,8 @@ type TableRules struct {
 	// TODO
 }
 
+type DealFunc func() (*Table, error)
+
 type Table struct {
 	ID                string
 	Type              TableType
@@ -34,13 +36,15 @@ type Table struct {
 	Board             []*Card
 	Dealer            int
 	CurrentMove       int
-	Deck              *Deck
 
-	m sync.RWMutex
+	deck             *Deck
+	m                sync.RWMutex
+	dealFuncs        []DealFunc
+	isDealerInactive bool
 }
 
 func NewTable(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) *Table {
-	return &Table{
+	t := &Table{
 		// ID TODO
 		Type:              tableType,
 		Name:              name,
@@ -50,11 +54,21 @@ func NewTable(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) 
 		CurrentPlayersNum: 0,
 		BigBlind:          Chips(bb),
 		SmallBlind:        Chips(sb),
-		Deck:              NewDeck(),
+		deck:              NewDeck(),
 		Dealer:            0,
 		CurrentMove:       0,
 		m:                 sync.RWMutex{},
+		isDealerInactive:  true,
 	}
+
+	t.dealFuncs = []DealFunc{
+		t.PreFlop,
+		t.Flop,
+		t.Turn,
+		t.River,
+	}
+
+	return t
 }
 
 func (t *Table) GetPlayerByID(id string) *Player {
@@ -86,15 +100,25 @@ func (t *Table) Register(player *Player) error {
 	return t.Pot.Register(player.ID)
 }
 
-func (t *Table) SetDealer() int {
+func (t *Table) GetDealFuncs() []DealFunc {
+	return t.dealFuncs
+}
+
+func (t *Table) setDealer() *Table {
 	d := helpers.GenerateRandomNumInRange(len(t.Players))
 
 	t.Dealer = d
 
-	return d
+	return t
 }
 
 func (t *Table) NextDealer() int {
+	if t.isDealerInactive {
+		t.isDealerInactive = false
+
+		return t.setDealer().Dealer
+	}
+
 	if t.Dealer == len(t.Players)-1 {
 		t.Dealer = 0
 
@@ -136,7 +160,7 @@ func (t *Table) ResolveWinner() ([]string, error) {
 	hands := make([]*Hand, 0)
 
 	for _, player := range t.Players {
-		h, err := t.GetPlayersHand(player.PocketCards)
+		h, err := t.GetPlayersHand(player.GetPocketCards())
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +178,7 @@ func (t *Table) ResolveWinner() ([]string, error) {
 	similar := make([]*Hand, 0)
 	lastNum, preLastNum := len(hands)-1, len(hands)-2
 
-	// если только одна максимальная рука
+	// если есть только одна максимальная рука
 	if hands[lastNum].Compare(hands[preLastNum]) != 0 {
 		for id, hand := range playersHandsMap {
 			if hand.Same(hands[lastNum]) {
@@ -192,18 +216,20 @@ func (t *Table) PreFlop() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	if err := t.Deck.Discard(); err != nil {
+	if err := t.deck.Discard(); err != nil {
 		return nil, err
 	}
 
 	for i := 0; i < PocketSize; i++ {
 		for _, player := range t.Players {
-			card, err := t.Deck.Card()
+			card, err := t.deck.Card()
 			if err != nil {
 				return nil, err
 			}
 
-			player.PocketCards = append(player.PocketCards, card)
+			if err := player.AddCard(card); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -214,12 +240,12 @@ func (t *Table) Flop() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	if err := t.Deck.Discard(); err != nil {
+	if err := t.deck.Discard(); err != nil {
 		return nil, err
 	}
 
 	for i := 0; i < CardsOnFlopNumber; i++ {
-		card, err := t.Deck.Card()
+		card, err := t.deck.Card()
 		if err != nil {
 			return nil, err
 		}
@@ -234,11 +260,11 @@ func (t *Table) openOne() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	if err := t.Deck.Discard(); err != nil {
+	if err := t.deck.Discard(); err != nil {
 		return nil, err
 	}
 
-	card, err := t.Deck.Card()
+	card, err := t.deck.Card()
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +304,39 @@ func (t *Table) Blinds() (*Table, error) {
 	}
 
 	if _, err = t.Pot.AddPlayerBet(bigBlind, big.ID); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
+func (t *Table) ShuffleDeck() *Table {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	t.deck = t.deck.Shuffle()
+
+	return t
+}
+
+func (t *Table) GetCard() (*Card, *Table, error) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	card, err := t.deck.Card()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return card, t, nil
+}
+
+func (t *Table) DropCard() (*Table, error) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	err := t.deck.Discard()
+	if err != nil {
 		return nil, err
 	}
 
