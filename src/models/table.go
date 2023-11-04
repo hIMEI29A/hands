@@ -43,9 +43,37 @@ type Table struct {
 	isDealerInactive bool
 }
 
-func NewTable(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) *Table {
+func NewTable(name, tag string, idMaker IdMaker, tableType TableType, maxPlayersNum, bb, sb int) *Table {
 	t := &Table{
-		// ID TODO
+		ID:                idMaker.MakeID(),
+		Type:              tableType,
+		Name:              name,
+		Pot:               NewPot(tag),
+		Players:           make([]*Player, 0),
+		MaxPlayersNum:     maxPlayersNum,
+		CurrentPlayersNum: 0,
+		BigBlind:          Chips(bb),
+		SmallBlind:        Chips(sb),
+		deck:              NewDeck(),
+		Dealer:            0,
+		CurrentMove:       0,
+		m:                 sync.RWMutex{},
+		isDealerInactive:  true,
+	}
+
+	t.dealFuncs = []DealFunc{
+		t.PreFlop,
+		t.Flop,
+		t.Turn,
+		t.River,
+	}
+
+	return t
+}
+
+func NewTableWithDefaultId(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) *Table {
+	t := &Table{
+		ID:                helpers.NewDefaultIdGenerator().MakeID(),
 		Type:              tableType,
 		Name:              name,
 		Pot:               NewPot(tag),
