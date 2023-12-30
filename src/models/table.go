@@ -316,7 +316,7 @@ func (t *Table) Blinds() (*Table, error) {
 	small := t.GetFirstPosition()
 	big := t.GetSecondPosition()
 
-	smallBlind, err := small.Call(t.SmallBlind)
+	smallBlind, err := small.Call(NewBet(t.SmallBlind, 0))
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ func (t *Table) Blinds() (*Table, error) {
 		return nil, err
 	}
 
-	bigBlind, err := big.Call(t.BigBlind)
+	bigBlind, err := big.Call(NewBet(t.BigBlind, 0))
 	if err != nil {
 		return nil, err
 	}

@@ -66,42 +66,42 @@ func (p *Player) AddCard(card *Card) error {
 	return nil
 }
 
-func (p *Player) Check(bet Chips) (Chips, error) {
-	return 0, nil
+func (p *Player) Check(bet *Bet) (Chips, error) {
+	return bet.Bet, nil
 }
 
-func (p *Player) Call(bet Chips) (Chips, error) {
+func (p *Player) Call(bet *Bet) (Chips, error) {
 	p.RLock()
 	defer p.RUnlock()
 
-	if bet > p.currentChipsAmount {
+	if bet.Bet > p.currentChipsAmount {
 		return 0, fmt.Errorf("Wrong bet amount %d", bet)
 	}
 
-	p.currentChipsAmount -= bet
+	p.currentChipsAmount -= bet.Bet
 
-	return bet, nil
+	return bet.Bet, nil
 }
 
-func (p *Player) Raise(bet, over Chips) (Chips, error) {
+func (p *Player) Raise(bet *Bet) (Chips, error) {
 	p.RLock()
 	defer p.RUnlock()
 
-	if bet > p.currentChipsAmount {
+	if bet.Bet > p.currentChipsAmount {
 		return 0, fmt.Errorf("Wrong bet amount %d", bet)
 	}
 
-	p.currentChipsAmount -= bet + over
+	p.currentChipsAmount -= bet.Bet + bet.Over
 
-	return bet + over, nil
+	return bet.Bet + bet.Over, nil
 }
 
-func (p *Player) Fall() (Chips, error) {
+func (p *Player) Fall(bet *Bet) (Chips, error) {
 	p.RLock()
 	defer p.RUnlock()
 
 	p.pocketCards = nil
 	p.Active = false
 
-	return 0, nil
+	return bet.Bet, nil
 }

@@ -7,8 +7,8 @@ import (
 
 const defaultIdLength = 24
 
-// GenerateRandomID генерирует случайную строку длиной [length] символов
-func GenerateRandomID(length int) string {
+// generateRandomID генерирует случайную строку длиной [length] символов
+func generateRandomID(length int) string {
 	id := make([]byte, length/2)
 	rand.Read(id)
 
@@ -16,7 +16,7 @@ func GenerateRandomID(length int) string {
 }
 
 func GenerateDefaultRandomID() string {
-	return GenerateRandomID(defaultIdLength)
+	return generateRandomID(defaultIdLength)
 }
 
 type defaultIdGenerator struct {
@@ -24,7 +24,7 @@ type defaultIdGenerator struct {
 }
 
 func (g *defaultIdGenerator) MakeID() string {
-	return GenerateRandomID(g.defaultIdLength)
+	return generateRandomID(g.defaultIdLength)
 }
 
 func NewDefaultIdGenerator() *defaultIdGenerator {
