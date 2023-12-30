@@ -346,13 +346,11 @@ func (h *Hand) GetFour() (hand []*Card) {
 
 // HasFlush определяет, является ли рука Flush
 func (h *Hand) HasFlush() bool {
-	n := 0
-
 	firstCard := ""
 
 	for card := range h.cardsMap {
 		firstCard = card
-		if n == 0 {
+		if true {
 			break
 		}
 	}

@@ -1,6 +1,6 @@
 # hands
 
-Texas Holdem poker's game entities and gameplay
+Texas Holdem poker's game library.
 
 ## Current version
 
