@@ -1,10 +1,12 @@
 # hands
 
+[![CI](https://github.com/hIMEI29A/hands/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/hIMEI29A/hands/actions/workflows/ci.yml)
+
 Texas Hold'em poker game library for Go.
 
 ## Current version
 
-v0.3.0-alpha
+v0.3.1-alpha
 
 ## Usage
 
@@ -39,3 +41,15 @@ func main() {
 	fmt.Println(deck.Len()) // 52
 }
 ```
+
+## Development
+
+Local checks run through `make`:
+
+```sh
+make check      # gofmt, build, vet, tests with -race
+make test-short # skip the exhaustive hand-category enumeration
+make lint       # golangci-lint, if installed
+```
+
+CI runs the same build and test steps on Go `1.20.x` and `stable`; lint findings are reported but do not block merges.
