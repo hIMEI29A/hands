@@ -7,6 +7,7 @@ import (
 	"regexp"
 )
 
+// CardValue is the rank of a card, from Two (the lowest) to Ace (the highest).
 type CardValue int
 
 func cardValueFromString(s string) CardValue {
@@ -49,10 +50,11 @@ var picCardsValues = map[string]CardValue{
 }
 
 var (
-	suiteFromStringPatten      = regexp.MustCompile(`[HDSC]$`)
+	suitFromStringPattern      = regexp.MustCompile(`[HDSC]$`)
 	cardValueFromStringPattern = regexp.MustCompile(`^\d{1,2}|[JQKA]{1}`)
 )
 
+// Card ranks, from the lowest (Two) to the highest (Ace).
 const (
 	Two CardValue = iota + 2
 	Three
@@ -69,6 +71,7 @@ const (
 	Ace
 )
 
+// CardValues lists every card value in ascending order.
 var CardValues = []CardValue{
 	Two,
 	Three,
@@ -95,10 +98,13 @@ func (cv CardValue) String() string {
 	return cardValuesStrings[cv-2]
 }
 
+// NewCardValue returns the card value with the given zero-based index,
+// i.e. 0 is Two and 12 is Ace.
 func NewCardValue(num int) CardValue {
 	return CardValue(num + 2)
 }
 
+// NewStringSliceFromCards returns the string representation of every card.
 func NewStringSliceFromCards(cards []*Card) []string {
 	ss := make([]string, len(cards))
 
@@ -109,16 +115,22 @@ func NewStringSliceFromCards(cards []*Card) []string {
 	return ss
 }
 
-type SuiteColor int8
+// SuitColor is the color of a suit: Red for hearts and diamonds, Black for
+// clubs and spades.
+type SuitColor int8
 
+// Card colors.
 const (
-	Red SuiteColor = iota
+	Red SuitColor = iota
 	Black
 )
 
-type Suite string
+// Suit is the suit of a card: Hearts, Diamonds, Spades or Clubs.
+type Suit string
 
-func (s Suite) Color() SuiteColor {
+// Color returns the color of the suit: Red for hearts and diamonds, Black
+// for every other suit.
+func (s Suit) Color() SuitColor {
 	if s == Hearts || s == Diamonds {
 		return Red
 	}
@@ -126,12 +138,19 @@ func (s Suite) Color() SuiteColor {
 	return Black
 }
 
-// SuiteFromString extracts the suit character from a card string.
-// It performs no validation and returns an empty Suite when no suit is found.
+// SuitFromString extracts the suit character from a card string.
+// It performs no validation and returns an empty Suit when no suit is found.
 //
 // Deprecated: use ParseCard instead, which validates the whole card string strictly.
-func SuiteFromString(card string) Suite {
-	return Suite(suiteFromStringPatten.FindString(card))
+func SuitFromString(card string) Suit {
+	return Suit(suitFromStringPattern.FindString(card))
+}
+
+// SuiteFromString extracts the suit character from a card string.
+//
+// Deprecated: use SuitFromString instead.
+func SuiteFromString(card string) Suit {
+	return SuitFromString(card)
 }
 
 // CardValueFromString extracts the card value from a card string.
@@ -143,7 +162,10 @@ func CardValueFromString(card string) CardValue {
 }
 
 const (
-	SuitesNum = 4
+	// SuitsNum is the number of suits in a deck.
+	SuitsNum = 4
+
+	// ValuesNum is the number of card values in a deck.
 	ValuesNum = 13
 )
 
@@ -178,11 +200,11 @@ func parseCardValue(s string) (CardValue, error) {
 	return 0, fmt.Errorf("invalid card value %q: want one of 2..10, J, Q, K, A", s)
 }
 
-// parseCardSuite strictly parses a card suit character (one of H, D, S, C).
-func parseCardSuite(s string) (Suite, error) {
-	for _, suite := range Suites {
-		if Suite(s) == suite {
-			return suite, nil
+// parseCardSuit strictly parses a card suit character (one of H, D, S, C).
+func parseCardSuit(s string) (Suit, error) {
+	for _, suit := range Suits {
+		if Suit(s) == suit {
+			return suit, nil
 		}
 	}
 
@@ -205,53 +227,69 @@ func ParseCard(s string) (*Card, error) {
 		return nil, fmt.Errorf("invalid card string %q: %w", s, err)
 	}
 
-	valueStr, suiteStr := upper[:len(upper)-1], upper[len(upper)-1:]
+	valueStr, suitStr := upper[:len(upper)-1], upper[len(upper)-1:]
 
 	value, err := parseCardValue(valueStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid card string %q: %w", s, err)
 	}
 
-	suite, err := parseCardSuite(suiteStr)
+	suit, err := parseCardSuit(suitStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid card string %q: %w", s, err)
 	}
 
 	return &Card{
 		Value: value,
-		Suite: &CardSuite{
-			Color: suite.Color(),
-			Suite: suite,
+		Suit: &CardSuit{
+			Color: suit.Color(),
+			Suit:  suit,
 		},
 	}, nil
 }
 
+// Card suits.
 const (
-	Hearts   Suite = "H"
-	Diamonds       = "D"
-	Spades         = "S"
-	Crosses        = "C"
+	Hearts   Suit = "H"
+	Diamonds      = "D"
+	Spades        = "S"
+	Clubs         = "C"
+
+	// Crosses is a deprecated alias for Clubs.
+	//
+	// Deprecated: use Clubs instead.
+	Crosses = Clubs
 )
 
-var Suites = []Suite{
+// Suits lists every suit of a deck.
+var Suits = []Suit{
 	"H",
 	"D",
 	"S",
 	"C",
 }
 
-type CardSuite struct {
-	Color SuiteColor
-	Suite Suite
+// CardSuit is the suit of a card together with its color.
+type CardSuit struct {
+	// Color is the color of the suit.
+	Color SuitColor
+
+	// Suit is the suit itself.
+	Suit Suit
 }
 
-func (same *CardSuite) Compare(other *CardSuite) bool {
-	return same.Suite == other.Suite
+// Compare reports whether both card suits are the same.
+func (c *CardSuit) Compare(other *CardSuit) bool {
+	return c.Suit == other.Suit
 }
 
+// Card is a single playing card: a value and a suit.
 type Card struct {
+	// Value is the rank of the card.
 	Value CardValue
-	Suite *CardSuite
+
+	// Suit is the suit of the card together with its color.
+	Suit *CardSuit
 }
 
 // NewCardFromString builds a Card from a card string ("10H", "2C", "AS").
@@ -267,34 +305,39 @@ func NewCardFromString(card string) *Card {
 	return c
 }
 
+// NewRandomCard returns a card with a random value and a random suit.
 func NewRandomCard() *Card {
-	suiteNum := helpers.GenerateRandomNumInRange(SuitesNum)
+	suitNum := helpers.GenerateRandomNumInRange(SuitsNum)
 	valueNum := helpers.GenerateRandomNumInRange(ValuesNum)
 
-	suite := Suites[suiteNum]
+	suit := Suits[suitNum]
 
 	c := &Card{
 		Value: NewCardValue(valueNum),
-		Suite: &CardSuite{
-			Color: suite.Color(),
-			Suite: suite,
+		Suit: &CardSuit{
+			Color: suit.Color(),
+			Suit:  suit,
 		},
 	}
 
 	return c
 }
 
-func (same *Card) String() string {
-	return fmt.Sprintf("%s%s", same.Value.String(), same.Suite.Suite)
+// String returns the card as a card string ("10H", "2C", "AS").
+func (c *Card) String() string {
+	return fmt.Sprintf("%s%s", c.Value.String(), c.Suit.Suit)
 }
 
-func (same *Card) CompareValues(other *Card) int {
+// CompareValues compares the values of two cards and returns -1, 0 or 1
+// depending on whether the value of c is lower than, equal to or greater
+// than the value of other.
+func (c *Card) CompareValues(other *Card) int {
 	n := 0
-	if same.Value == other.Value {
+	if c.Value == other.Value {
 		return n
 	}
 
-	switch same.Value < other.Value {
+	switch c.Value < other.Value {
 	case true:
 		n--
 	case false:
@@ -304,22 +347,48 @@ func (same *Card) CompareValues(other *Card) int {
 	return n
 }
 
-func (same *Card) EqualTo(other *Card) bool {
-	return same.CompareValues(other) == 0
+// SameValue reports whether both cards have the same value.
+func (c *Card) SameValue(other *Card) bool {
+	return c.CompareValues(other) == 0
 }
 
-func (same *Card) LessThan(other *Card) bool {
-	return same.CompareValues(other) < 0
+// EqualTo reports whether both cards have the same value.
+//
+// Deprecated: use SameValue instead.
+func (c *Card) EqualTo(other *Card) bool {
+	return c.SameValue(other)
 }
 
-func (same *Card) GreaterThan(other *Card) bool {
-	return same.CompareValues(other) > 0
+// LessThan reports whether the value of c is lower than the value of other.
+func (c *Card) LessThan(other *Card) bool {
+	return c.CompareValues(other) < 0
 }
 
-func (same *Card) CompareSuites(other *Card) bool {
-	return same.Suite.Compare(other.Suite)
+// GreaterThan reports whether the value of c is greater than the value of other.
+func (c *Card) GreaterThan(other *Card) bool {
+	return c.CompareValues(other) > 0
 }
 
-func (same *Card) Compare(other *Card) bool {
-	return same.CompareValues(other) == 0 && same.CompareSuites(other)
+// SameSuit reports whether both cards have the same suit.
+func (c *Card) SameSuit(other *Card) bool {
+	return c.Suit.Compare(other.Suit)
+}
+
+// CompareSuites reports whether both cards have the same suit.
+//
+// Deprecated: use SameSuit instead.
+func (c *Card) CompareSuites(other *Card) bool {
+	return c.SameSuit(other)
+}
+
+// Same reports whether both cards have the same value and the same suit.
+func (c *Card) Same(other *Card) bool {
+	return c.SameValue(other) && c.SameSuit(other)
+}
+
+// Compare reports whether both cards have the same value and the same suit.
+//
+// Deprecated: use Same instead.
+func (c *Card) Compare(other *Card) bool {
+	return c.Same(other)
 }

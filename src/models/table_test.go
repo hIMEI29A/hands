@@ -10,7 +10,7 @@ import (
 // newTestTable creates a table with a fixed ID, unlimited seats (0) and
 // given blinds, so tests do not depend on randomness for reservations.
 func newTestTable(name, tag string, maxPlayersNum, bb, sb int) *Table {
-	return NewTable(name, tag, stubIDMaker{id: "table-" + name}, CasheTableType, maxPlayersNum, bb, sb)
+	return NewTable(name, tag, stubIDMaker{id: "table-" + name}, CashTableType, maxPlayersNum, bb, sb)
 }
 
 func TestNewTableConstructors(t *testing.T) {
@@ -31,7 +31,7 @@ func TestNewTableConstructors(t *testing.T) {
 	})
 
 	t.Run("NewTable nil idMaker falls back", func(t *testing.T) {
-		table := NewTable("t2", "tag", nil, CasheTableType, 9, 100, 50)
+		table := NewTable("t2", "tag", nil, CashTableType, 9, 100, 50)
 
 		if table.ID == "" {
 			t.Fatal("NewTable with nil idMaker produced an empty ID")
@@ -39,7 +39,7 @@ func TestNewTableConstructors(t *testing.T) {
 	})
 
 	t.Run("NewTableWithDefaultId produces non-empty ID", func(t *testing.T) {
-		table := NewTableWithDefaultId("t3", "tag", CasheTableType, 9, 100, 50)
+		table := NewTableWithDefaultId("t3", "tag", CashTableType, 9, 100, 50)
 
 		if table.ID == "" {
 			t.Fatal("NewTableWithDefaultId produced an empty ID")
@@ -47,8 +47,8 @@ func TestNewTableConstructors(t *testing.T) {
 	})
 
 	t.Run("both constructors produce distinct IDs", func(t *testing.T) {
-		a := NewTableWithDefaultId("t4-a", "tag", CasheTableType, 9, 100, 50)
-		b := NewTableWithDefaultId("t4-b", "tag", CasheTableType, 9, 100, 50)
+		a := NewTableWithDefaultId("t4-a", "tag", CashTableType, 9, 100, 50)
+		b := NewTableWithDefaultId("t4-b", "tag", CashTableType, 9, 100, 50)
 
 		if a.ID == b.ID {
 			t.Fatalf("both tables share ID %q", a.ID)
@@ -63,6 +63,30 @@ func TestNewTableConstructors(t *testing.T) {
 			t.Fatalf("len(GetDealFuncs()) = %d, want 4", len(funcs))
 		}
 	})
+}
+
+func TestTableTypes(t *testing.T) {
+	if CashTableType != "cash" {
+		t.Errorf("CashTableType = %q, want %q", CashTableType, "cash")
+	}
+
+	if TournamentTableType != "tournament" {
+		t.Errorf("TournamentTableType = %q, want %q", TournamentTableType, "tournament")
+	}
+
+	// The deprecated constants keep their original values.
+	if CasheTableType != "cashe" {
+		t.Errorf("CasheTableType = %q, want %q", CasheTableType, "cashe")
+	}
+
+	if TournarmentTableType != "tournarment" {
+		t.Errorf("TournarmentTableType = %q, want %q", TournarmentTableType, "tournarment")
+	}
+
+	table := newTestTable("types", "tag", 0, 100, 50)
+	if table.Type != CashTableType {
+		t.Errorf("table.Type = %q, want %q", table.Type, CashTableType)
+	}
 }
 
 func TestRegister(t *testing.T) {

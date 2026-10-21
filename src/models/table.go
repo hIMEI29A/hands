@@ -8,11 +8,29 @@ import (
 	"sync"
 )
 
+// TableType is the kind of a table.
 type TableType string
 
+// Table types.
 const (
-	CasheTableType       TableType = "cashe"
-	TournarmentTableType           = "tournarment"
+	// CashTableType is a table where the chips have cash value.
+	CashTableType TableType = "cash"
+
+	// TournamentTableType is a table where the chips have tournament value.
+	TournamentTableType TableType = "tournament"
+)
+
+// Deprecated table types, kept for backward compatibility.
+const (
+	// CasheTableType is a table where the chips have cash value.
+	//
+	// Deprecated: use CashTableType instead.
+	CasheTableType TableType = "cashe"
+
+	// TournarmentTableType is a table where the chips have tournament value.
+	//
+	// Deprecated: use TournamentTableType instead.
+	TournarmentTableType TableType = "tournarment"
 )
 
 const CardsOnFlopNumber = 3

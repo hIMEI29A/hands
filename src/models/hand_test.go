@@ -396,10 +396,10 @@ func TestExhaustiveCategoryCounts(t *testing.T) {
 		t.Skip("exhaustive enumeration skipped in short mode")
 	}
 
-	deck := make([]*Card, 0, SuitesNum*ValuesNum)
-	for _, s := range Suites {
+	deck := make([]*Card, 0, SuitsNum*ValuesNum)
+	for _, s := range Suits {
 		for _, v := range CardValues {
-			deck = append(deck, &Card{Value: v, Suite: &CardSuite{Color: s.Color(), Suite: s}})
+			deck = append(deck, &Card{Value: v, Suit: &CardSuit{Color: s.Color(), Suit: s}})
 		}
 	}
 
@@ -476,7 +476,7 @@ func TestGetMaxHandWithBoardDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestValidateHandRejectsNilSuite(t *testing.T) {
+func TestValidateHandRejectsNilSuit(t *testing.T) {
 	good := []*Card{
 		NewCardFromString("2H"),
 		NewCardFromString("3H"),

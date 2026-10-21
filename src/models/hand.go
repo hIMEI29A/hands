@@ -82,11 +82,11 @@ func compareCards(a, b *Card) int {
 		return 1
 	}
 
-	aSuite, bSuite := a.Suite.Suite, b.Suite.Suite
+	aSuit, bSuit := a.Suit.Suit, b.Suit.Suit
 	switch {
-	case aSuite < bSuite:
+	case aSuit < bSuit:
 		return -1
-	case aSuite > bSuite:
+	case aSuit > bSuit:
 		return 1
 	}
 
@@ -130,7 +130,7 @@ func ValidateHand(hand []*Card) error {
 			return fmt.Errorf("hand contains a nil card at index %d", i)
 		}
 
-		if card.Suite == nil {
+		if card.Suit == nil {
 			return fmt.Errorf("hand contains a card with nil suit at index %d", i)
 		}
 

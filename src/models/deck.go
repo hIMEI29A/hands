@@ -5,10 +5,14 @@ import (
 	"time"
 )
 
+// DeckLength is the number of cards in a full deck.
 const DeckLength = 52
 
+// EOF is the message of the EofError.
 const EOF = "eof"
 
+// NewEofError returns the error returned when a card is requested from an
+// empty deck.
 func NewEofError() EofError {
 	return EofError{}
 }
@@ -17,6 +21,7 @@ func NewEofError() EofError {
 type EofError struct {
 }
 
+// Error returns the error message.
 func (e EofError) Error() string {
 	return EOF
 }
@@ -71,13 +76,13 @@ func (d *Deck) rngRand() *rand.Rand {
 func makeOrderedCards() []*Card {
 	cards := make([]*Card, 0)
 
-	for _, suite := range Suites {
+	for _, suit := range Suits {
 		for _, cardValue := range CardValues {
 			cards = append(cards, &Card{
 				Value: cardValue,
-				Suite: &CardSuite{
-					Color: suite.Color(),
-					Suite: suite,
+				Suit: &CardSuit{
+					Color: suit.Color(),
+					Suit:  suit,
 				},
 			})
 		}

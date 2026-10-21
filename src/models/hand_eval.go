@@ -38,9 +38,9 @@ func isFlush(cards []*Card) bool {
 		return false
 	}
 
-	suite := cards[0].Suite.Suite
+	suit := cards[0].Suit.Suit
 	for _, c := range cards {
-		if c.Suite.Suite != suite {
+		if c.Suit.Suit != suit {
 			return false
 		}
 	}
