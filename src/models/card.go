@@ -251,14 +251,14 @@ func ParseCard(s string) (*Card, error) {
 // Card suits.
 const (
 	Hearts   Suit = "H"
-	Diamonds      = "D"
-	Spades        = "S"
-	Clubs         = "C"
+	Diamonds Suit = "D"
+	Spades   Suit = "S"
+	Clubs    Suit = "C"
 
 	// Crosses is a deprecated alias for Clubs.
 	//
 	// Deprecated: use Clubs instead.
-	Crosses = Clubs
+	Crosses Suit = Clubs
 )
 
 // Suits lists every suit of a deck.
