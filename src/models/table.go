@@ -38,26 +38,28 @@ const CardsOnFlopNumber = 3
 // BoardSize is the number of community cards on a complete board.
 const BoardSize = 5
 
-type TableRules struct {
-	// TODO
-}
-
 type DealFunc func() (*Table, error)
 
 type Table struct {
 	ID                string
 	Type              TableType
-	TableRules        *TableRules
 	Name              string
 	Pot               *Pot
 	Players           []*Player
 	MaxPlayersNum     int
 	CurrentPlayersNum int
-	BigBlind          Chips
-	SmallBlind        Chips
 	Board             []*Card
 	Dealer            int
-	CurrentMove       int
+
+	rules            TableRules
+	phase            HandPhase
+	street           Street
+	currentActor     int
+	currentBet       Chips
+	lastFullRaise    Chips
+	lastFullRaiseBet Chips
+	raisesThisStreet int
+	lastResults      []PotResult
 
 	deck             *Deck
 	m                sync.RWMutex
@@ -70,16 +72,31 @@ func NewTable(name, tag string, idMaker IdMaker, tableType TableType, maxPlayers
 		idMaker = helpers.NewDefaultIdGenerator()
 	}
 
-	return newTable(idMaker.MakeID(), name, tag, tableType, maxPlayersNum, bb, sb)
+	return newTable(idMaker.MakeID(), name, tag, tableType, maxPlayersNum, DefaultTableRules(Chips(sb), Chips(bb)))
 }
 
 func NewTableWithDefaultId(name, tag string, tableType TableType, maxPlayersNum, bb, sb int) *Table {
-	return newTable(helpers.NewDefaultIdGenerator().MakeID(), name, tag, tableType, maxPlayersNum, bb, sb)
+	return newTable(helpers.NewDefaultIdGenerator().MakeID(), name, tag, tableType, maxPlayersNum, DefaultTableRules(Chips(sb), Chips(bb)))
+}
+
+// NewTableWithRules creates a table with explicit rules. The rules are
+// normalized and validated before the table is built.
+func NewTableWithRules(name, tag string, idMaker IdMaker, tableType TableType, maxPlayersNum int, rules *TableRules) (*Table, error) {
+	if idMaker == nil {
+		idMaker = helpers.NewDefaultIdGenerator()
+	}
+
+	normalized := rules.normalized()
+	if err := normalized.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid table rules: %w", err)
+	}
+
+	return newTable(idMaker.MakeID(), name, tag, tableType, maxPlayersNum, normalized), nil
 }
 
 // newTable is the single constructor shared by the exported table
 // constructors; both pass only the generated ID as a difference.
-func newTable(id, name, tag string, tableType TableType, maxPlayersNum, bb, sb int) *Table {
+func newTable(id, name, tag string, tableType TableType, maxPlayersNum int, rules *TableRules) *Table {
 	t := &Table{
 		ID:                id,
 		Type:              tableType,
@@ -88,11 +105,12 @@ func newTable(id, name, tag string, tableType TableType, maxPlayersNum, bb, sb i
 		Players:           make([]*Player, 0),
 		MaxPlayersNum:     maxPlayersNum,
 		CurrentPlayersNum: 0,
-		BigBlind:          Chips(bb),
-		SmallBlind:        Chips(sb),
+		rules:             *rules.normalized(),
 		deck:              NewDeck(),
 		Dealer:            0,
-		CurrentMove:       0,
+		phase:             PhaseWaiting,
+		street:            StreetPreFlop,
+		currentActor:      -1,
 		m:                 sync.RWMutex{},
 		isDealerInactive:  true,
 	}
@@ -105,6 +123,30 @@ func newTable(id, name, tag string, tableType TableType, maxPlayersNum, bb, sb i
 	}
 
 	return t
+}
+
+// Rules returns a copy of the table rules.
+func (t *Table) Rules() TableRules {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
+	return t.rules
+}
+
+// SmallBlind returns the small blind amount.
+func (t *Table) SmallBlind() Chips {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
+	return t.rules.SmallBlind
+}
+
+// BigBlind returns the big blind amount.
+func (t *Table) BigBlind() Chips {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
+	return t.rules.BigBlind
 }
 
 // getPlayerByID searches the players without taking the table lock.
@@ -204,22 +246,58 @@ func (t *Table) GetDealer() (*Player, error) {
 	return t.Players[t.Dealer%len(t.Players)], nil
 }
 
-// nextDealerLocked moves the dealer button; requires t.m to be held.
-// With no players it leaves the dealer unchanged.
+// nextDealerLocked moves the dealer button to the next player who is in
+// the hand. On the first hand the button starts at a random in-hand seat.
+// Requires t.m to be held.
 func (t *Table) nextDealerLocked() {
 	if len(t.Players) == 0 {
 		return
 	}
 
+	active := t.activeIndexesLocked()
+	if len(active) == 0 {
+		return
+	}
+
 	if t.isDealerInactive {
 		t.isDealerInactive = false
-
-		t.Dealer = helpers.GenerateRandomNumInRange(len(t.Players))
+		t.Dealer = active[helpers.GenerateRandomNumInRange(len(active))]
 
 		return
 	}
 
-	t.Dealer = (t.Dealer + 1) % len(t.Players)
+	idx, err := t.nextActiveIndex(t.Dealer + 1)
+	if err != nil {
+		return
+	}
+
+	t.Dealer = idx
+}
+
+// activeIndexesLocked returns the seat indexes of all players currently in
+// the hand, in seat order.
+func (t *Table) activeIndexesLocked() []int {
+	active := make([]int, 0, len(t.Players))
+
+	for i, p := range t.Players {
+		if p.Active {
+			active = append(active, i)
+		}
+	}
+
+	return active
+}
+
+func (t *Table) activeCountLocked() int {
+	count := 0
+
+	for _, p := range t.Players {
+		if p.Active {
+			count++
+		}
+	}
+
+	return count
 }
 
 // NextDealer moves the dealer button to the next seat (or picks a random
@@ -241,32 +319,70 @@ func (t *Table) GetPlayersHand(pocket []*Card) (*Hand, error) {
 	return GetMaxHandWithBoard(NewStringSliceFromCards(t.Board), NewStringSliceFromCards(pocket))
 }
 
-// StartHand prepares the table for a new hand: it clears the board,
-// resets and repopulates the pot, resets every player's pocket cards
-// and activity state, shuffles the deck and moves the dealer button.
-// It requires at least 2 registered players.
+// StartHand prepares and starts a complete hand: it resets per-hand
+// state, sits out players with empty stacks, shuffles the deck, moves the
+// dealer button, posts blinds, deals pocket cards and opens preflop
+// betting.
 func (t *Table) StartHand() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	if len(t.Players) < 2 {
-		return nil, fmt.Errorf("table needs at least 2 registered players to start a hand, got %d", len(t.Players))
+	if err := t.rules.Validate(); err != nil {
+		return nil, fmt.Errorf("start hand: %w", err)
 	}
 
-	t.Board = make([]*Card, 0)
+	funded := 0
+	for _, p := range t.Players {
+		if p.GetCurrentChipsAmount() > 0 {
+			funded++
+		}
+	}
 
-	t.Pot.Reset()
+	if funded < t.rules.MinPlayers {
+		return nil, fmt.Errorf("table needs at least %d players with chips to start a hand, got %d", t.rules.MinPlayers, funded)
+	}
 
 	for _, p := range t.Players {
-		if err := t.Pot.Register(p.ID); err != nil {
+		p.ResetForHand()
+	}
+
+	active := t.activeIndexesLocked()
+
+	t.Board = make([]*Card, 0)
+	t.Pot.Reset()
+	t.lastResults = nil
+	t.CurrentPlayersNum = len(active)
+
+	for _, idx := range active {
+		if err := t.Pot.Register(t.Players[idx].ID); err != nil {
 			return nil, fmt.Errorf("start hand: %w", err)
 		}
-
-		p.ResetForHand()
 	}
 
 	t.deck = t.deck.Shuffle()
 	t.nextDealerLocked()
+
+	t.phase = PhaseBetting
+	t.street = StreetPreFlop
+	t.currentBet = 0
+	t.lastFullRaise = t.rules.MinRaise
+	t.lastFullRaiseBet = 0
+	t.raisesThisStreet = 0
+	t.currentActor = -1
+
+	_, bigBlindIdx, err := t.postBlindsLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.dealPocketsLocked(); err != nil {
+		return nil, err
+	}
+
+	t.currentActor = t.firstPreFlopActorLocked(bigBlindIdx)
+	if t.currentActor < 0 {
+		t.phase = PhaseStreetComplete
+	}
 
 	return t, nil
 }
@@ -290,22 +406,39 @@ func (t *Table) nextActiveIndex(start int) (int, error) {
 	return 0, errors.New("table has no active players")
 }
 
-// Blinds posts the small and big blind from the first two active seats
-// after the dealer and records both bets in the pot.
+// Blinds posts the small and big blind. It is a low-level helper kept for
+// manual dealing; StartHand posts the blinds itself. Calling it after
+// blinds have already been posted returns an error.
+//
+// Deprecated: use StartHand, which sets up the complete hand and betting
+// state.
 func (t *Table) Blinds() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	activeNum := 0
+	if t.currentBet > 0 {
+		return nil, errors.New("blinds have already been posted")
+	}
 
 	for _, p := range t.Players {
-		if p.Active {
-			activeNum++
+		if p.GetStreetBet() > 0 {
+			return nil, errors.New("blinds have already been posted")
 		}
 	}
 
+	if _, _, err := t.postBlindsLocked(); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
+// postBlindsLocked posts the small and big blind for the current hand and
+// initializes the preflop bet size. Requires t.m to be held.
+func (t *Table) postBlindsLocked() (int, int, error) {
+	activeNum := t.activeCountLocked()
 	if activeNum < 2 {
-		return nil, fmt.Errorf("blinds require at least 2 active players, got %d", activeNum)
+		return 0, 0, fmt.Errorf("blinds require at least 2 active players, got %d", activeNum)
 	}
 
 	var (
@@ -313,50 +446,73 @@ func (t *Table) Blinds() (*Table, error) {
 		err      error
 	)
 
-	if len(t.Players) == 2 {
-		// Heads-up: the dealer posts the small blind (both seats are
-		// active, as checked above).
-		smallIdx = t.Dealer % len(t.Players)
+	if activeNum == 2 {
+		// Heads-up: the dealer posts the small blind.
+		smallIdx = t.Dealer
+		if !t.Players[smallIdx].Active {
+			smallIdx, err = t.nextActiveIndex(t.Dealer + 1)
+			if err != nil {
+				return 0, 0, err
+			}
+		}
 	} else {
 		smallIdx, err = t.nextActiveIndex(t.Dealer + 1)
-	}
-
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 
 	bigIdx, err := t.nextActiveIndex(smallIdx + 1)
 	if err != nil {
-		return nil, err
+		return 0, 0, err
 	}
 
-	small := t.Players[smallIdx]
-	big := t.Players[bigIdx]
+	if err := t.postBlindLocked(t.Players[smallIdx], t.rules.SmallBlind); err != nil {
+		return 0, 0, err
+	}
 
-	smallBlind, err := small.Call(NewBet(t.SmallBlind, 0))
+	if err := t.postBlindLocked(t.Players[bigIdx], t.rules.BigBlind); err != nil {
+		return 0, 0, err
+	}
+
+	t.currentBet = t.rules.BigBlind
+	t.lastFullRaise = t.rules.MinRaise
+	t.lastFullRaiseBet = t.rules.BigBlind
+	t.raisesThisStreet = 0
+
+	return smallIdx, bigIdx, nil
+}
+
+// postBlindLocked deducts min(blind, stack) from the player and records it
+// in the pot. Requires t.m to be held.
+func (t *Table) postBlindLocked(p *Player, blind Chips) error {
+	amount := blind
+	if stack := p.GetCurrentChipsAmount(); stack < amount {
+		amount = stack
+	}
+
+	if amount <= 0 {
+		return nil
+	}
+
+	paid, err := p.commit(amount)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if _, err = t.Pot.AddPlayerBet(smallBlind, small.ID); err != nil {
-		return nil, err
+	if _, err := t.Pot.AddPlayerBet(paid, p.ID); err != nil {
+		return err
 	}
 
-	bigBlind, err := big.Call(NewBet(t.BigBlind, 0))
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = t.Pot.AddPlayerBet(bigBlind, big.ID); err != nil {
-		return nil, err
-	}
-
-	return t, nil
+	return nil
 }
 
 // ResolveWinner evaluates every active player's pocket cards against the
 // board and returns the IDs of all players holding the maximum hand
-// (split pot), sorted for deterministic output.
+// (split pot), sorted for deterministic output. It does not build side
+// pots or move chips.
+//
+// Deprecated: use ResolvePots or Showdown for pot-aware results.
 func (t *Table) ResolveWinner() ([]string, error) {
 	t.m.RLock()
 	defer t.m.RUnlock()
@@ -414,7 +570,9 @@ func (t *Table) ResolveWinner() ([]string, error) {
 
 // PreFlop deals 2 pocket cards to each active player. The deck must be
 // shuffled, the board must be empty and every active player must have an
-// empty pocket.
+// empty pocket. It bypasses the betting state machine.
+//
+// Deprecated: StartHand deals pocket cards and opens preflop betting.
 func (t *Table) PreFlop() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
@@ -473,7 +631,9 @@ func (t *Table) openBoardCards(n int) (*Table, error) {
 }
 
 // Flop burns one card and opens the first 3 board cards. The board must
-// be empty.
+// be empty. It bypasses the betting state machine.
+//
+// Deprecated: use NextStreet after a completed preflop betting round.
 func (t *Table) Flop() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
@@ -496,7 +656,10 @@ func (t *Table) openOne(boardLen int) (*Table, error) {
 	return t.openBoardCards(1)
 }
 
-// Turn burns one card and opens the 4th board card.
+// Turn burns one card and opens the 4th board card. It bypasses the
+// betting state machine.
+//
+// Deprecated: use NextStreet after a completed flop betting round.
 func (t *Table) Turn() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
@@ -504,7 +667,10 @@ func (t *Table) Turn() (*Table, error) {
 	return t.openOne(3)
 }
 
-// River burns one card and opens the 5th board card.
+// River burns one card and opens the 5th board card. It bypasses the
+// betting state machine.
+//
+// Deprecated: use NextStreet after a completed turn betting round.
 func (t *Table) River() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()

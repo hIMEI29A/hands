@@ -388,7 +388,7 @@ func TestNextDealer(t *testing.T) {
 }
 
 func TestStartHand(t *testing.T) {
-	t.Run("requires at least 2 players", func(t *testing.T) {
+	t.Run("requires at least 2 players with chips", func(t *testing.T) {
 		table := setupPlayers(t, "start-1", 1)
 
 		if _, err := table.StartHand(); err == nil {
@@ -396,9 +396,9 @@ func TestStartHand(t *testing.T) {
 		}
 	})
 
-	t.Run("resets state and shuffles deck", func(t *testing.T) {
+	t.Run("resets state, posts blinds and deals pockets", func(t *testing.T) {
 		table := setupPlayers(t, "start-2", 3)
-		p1, p2, p3 := table.Players[0], table.Players[1], table.Players[2]
+		p0, p1, p2 := table.Players[0], table.Players[1], table.Players[2]
 
 		// Dirty state from a previous hand.
 		board := mustCards(t, "2H", "3D", "5S", "9H", "KD")
@@ -408,11 +408,7 @@ func TestStartHand(t *testing.T) {
 			t.Fatalf("AddCard: %v", err)
 		}
 
-		if err := p2.AddCard(mustCards(t, "QD")[0]); err != nil {
-			t.Fatalf("AddCard: %v", err)
-		}
-
-		// p2 falls and keeps only 1 pocket card.
+		// p2 folds before the new hand; StartHand must reactivate it.
 		if _, err := p2.Fall(NewBet(0, 0)); err != nil {
 			t.Fatalf("Fall: %v", err)
 		}
@@ -422,6 +418,7 @@ func TestStartHand(t *testing.T) {
 		}
 
 		table.isDealerInactive = false
+		table.Dealer = -1
 
 		if _, err := table.StartHand(); err != nil {
 			t.Fatalf("StartHand: %v", err)
@@ -431,41 +428,131 @@ func TestStartHand(t *testing.T) {
 			t.Fatalf("len(Board) = %d, want 0", got)
 		}
 
-		for _, p := range []*Player{p1, p2, p3} {
+		if table.Dealer != 0 {
+			t.Fatalf("Dealer = %d, want 0", table.Dealer)
+		}
+
+		for _, p := range []*Player{p0, p1, p2} {
 			if !p.Active {
 				t.Fatalf("player %s is inactive after StartHand", p.ID)
 			}
 
-			if got := len(p.GetPocketCards()); got != 0 {
-				t.Fatalf("player %s has %d pocket cards after StartHand, want 0", p.ID, got)
+			if got := len(p.GetPocketCards()); got != PocketSize {
+				t.Fatalf("player %s has %d pocket cards after StartHand, want %d", p.ID, got, PocketSize)
 			}
 		}
 
-		if got := table.Pot.TotalChipsNum; got != 0 {
-			t.Fatalf("Pot.TotalChipsNum = %d, want 0", got)
+		sb, bb := table.SmallBlind(), table.BigBlind()
+
+		if got := table.Pot.TotalChipsNum; got != sb+bb {
+			t.Fatalf("Pot.TotalChipsNum = %d, want %d", got, sb+bb)
 		}
 
-		for _, p := range []*Player{p1, p2, p3} {
-			amt, err := table.Pot.GetPlayerAmount(p.ID)
+		wantContributions := map[string]int{
+			p0.ID: 0,
+			p1.ID: int(sb),
+			p2.ID: int(bb),
+		}
+
+		for id, want := range wantContributions {
+			amt, err := table.Pot.GetPlayerAmount(id)
 			if err != nil {
-				t.Fatalf("GetPlayerAmount(%s): %v", p.ID, err)
+				t.Fatalf("GetPlayerAmount(%s): %v", id, err)
 			}
 
-			if amt != 0 {
-				t.Fatalf("GetPlayerAmount(%s) = %d, want 0", p.ID, amt)
+			if amt != want {
+				t.Fatalf("GetPlayerAmount(%s) = %d, want %d", id, amt, want)
 			}
 		}
 
-		if got := table.deck.Len(); got != DeckLength {
-			t.Fatalf("deck length after StartHand = %d, want %d", got, DeckLength)
+		if got := table.deck.Len(); got != DeckLength-2*len(table.Players) {
+			t.Fatalf("deck length after StartHand = %d, want %d", got, DeckLength-2*len(table.Players))
 		}
 
 		if table.isDealerInactive {
 			t.Fatal("dealer was not activated by StartHand")
 		}
 
-		if table.Dealer < 0 || table.Dealer >= len(table.Players) {
-			t.Fatalf("Dealer = %d, want a valid index", table.Dealer)
+		if got := table.Phase(); got != PhaseBetting {
+			t.Fatalf("Phase = %q, want %q", got, PhaseBetting)
+		}
+
+		if got := table.Street(); got != StreetPreFlop {
+			t.Fatalf("Street = %q, want %q", got, StreetPreFlop)
+		}
+
+		if got := table.CurrentBet(); got != bb {
+			t.Fatalf("CurrentBet = %d, want %d", got, bb)
+		}
+
+		actor, err := table.CurrentActor()
+		if err != nil {
+			t.Fatalf("CurrentActor: %v", err)
+		}
+
+		if actor.ID != p0.ID {
+			t.Fatalf("CurrentActor = %s, want %s", actor.ID, p0.ID)
+		}
+	})
+
+	t.Run("players with empty stacks sit out", func(t *testing.T) {
+		table := newTestTable("start-broke", "tag", 0, 20, 10)
+
+		for i, stack := range []Chips{1000, 0, 1000} {
+			id := setupPlayerID(i)
+			if err := table.Register(NewPlayer(id, stubIDMaker{id}, stack)); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+		}
+
+		table.isDealerInactive = false
+		table.Dealer = -1
+
+		if _, err := table.StartHand(); err != nil {
+			t.Fatalf("StartHand: %v", err)
+		}
+
+		broke := table.Players[1]
+		if broke.Active {
+			t.Fatal("empty-stack player is active")
+		}
+
+		if got := len(broke.GetPocketCards()); got != 0 {
+			t.Fatalf("empty-stack player has %d pocket cards, want 0", got)
+		}
+
+		if _, err := table.Pot.GetPlayerAmount(broke.ID); err == nil {
+			t.Fatal("empty-stack player was registered in the pot")
+		}
+
+		if got := table.Dealer; got != 0 {
+			t.Fatalf("Dealer = %d, want 0", got)
+		}
+
+		if got := table.CurrentBet(); got != Chips(20) {
+			t.Fatalf("CurrentBet = %d, want 20", got)
+		}
+	})
+
+	t.Run("dealer skips players with empty stacks", func(t *testing.T) {
+		table := newTestTable("start-skip", "tag", 0, 20, 10)
+
+		for i, stack := range []Chips{1000, 0, 1000, 1000} {
+			id := setupPlayerID(i)
+			if err := table.Register(NewPlayer(id, stubIDMaker{id}, stack)); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+		}
+
+		table.isDealerInactive = false
+		table.Dealer = 0
+
+		if _, err := table.StartHand(); err != nil {
+			t.Fatalf("StartHand: %v", err)
+		}
+
+		if got := table.Dealer; got != 2 {
+			t.Fatalf("Dealer = %d, want 2 (seat 1 is sitting out)", got)
 		}
 	})
 }
@@ -492,10 +579,7 @@ func setupPlayerID(i int) string {
 
 func TestDealStreets(t *testing.T) {
 	table := setupPlayers(t, "deal-flow", 3)
-
-	if _, err := table.StartHand(); err != nil {
-		t.Fatalf("StartHand: %v", err)
-	}
+	table.ShuffleDeck()
 
 	// Streets out of order fail before the missing ones are dealt.
 	if _, err := table.Turn(); err == nil {
@@ -687,8 +771,9 @@ func TestBlinds(t *testing.T) {
 			t.Fatalf("inactive player stack = %d, want 1000", got)
 		}
 
-		// p2 posts the small blind, p0 the big blind.
-		amt, err = table.Pot.GetPlayerAmount(p2.ID)
+		// With two players remaining, the dealer posts the small blind
+		// and p2 posts the big blind.
+		amt, err = table.Pot.GetPlayerAmount(p0.ID)
 		if err != nil {
 			t.Fatalf("GetPlayerAmount: %v", err)
 		}
@@ -697,7 +782,7 @@ func TestBlinds(t *testing.T) {
 			t.Fatalf("small blind contribution = %d, want 10", amt)
 		}
 
-		amt, err = table.Pot.GetPlayerAmount(p0.ID)
+		amt, err = table.Pot.GetPlayerAmount(p2.ID)
 		if err != nil {
 			t.Fatalf("GetPlayerAmount: %v", err)
 		}

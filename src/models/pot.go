@@ -54,6 +54,22 @@ func (p *Pot) AddPlayerBet(bet Chips, playerID string) (int, error) {
 	return int(val), nil
 }
 
+// RemoveChips takes chips out of the pot, for example for an uncalled-bet
+// refund or a showdown payout. Player contribution history is preserved.
+func (p *Pot) RemoveChips(amount Chips) error {
+	if amount < 0 {
+		return fmt.Errorf("negative amount %d", amount)
+	}
+
+	if amount > p.TotalChipsNum {
+		return fmt.Errorf("amount %d exceeds pot total %d", amount, p.TotalChipsNum)
+	}
+
+	p.TotalChipsNum -= amount
+
+	return nil
+}
+
 // GetPlayerAmount returns the player's total contribution to the pot.
 func (p *Pot) GetPlayerAmount(playerID string) (int, error) {
 	if _, ok := p.PlayersChips[playerID]; !ok {
