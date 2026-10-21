@@ -13,7 +13,10 @@ type Player struct {
 	Active bool
 
 	currentChipsAmount Chips
+	streetBet          Chips
 	pocketCards        []*Card
+	acted              bool
+	allIn              bool
 	mu                 sync.RWMutex
 }
 
@@ -51,6 +54,97 @@ func (p *Player) GetCurrentChipsAmount() Chips {
 	return p.currentChipsAmount
 }
 
+// GetStreetBet returns how many chips the player has committed on the
+// current betting street.
+func (p *Player) GetStreetBet() Chips {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.streetBet
+}
+
+// IsAllIn reports whether the player has no chips left but is still in the
+// hand.
+func (p *Player) IsAllIn() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.allIn
+}
+
+// HasActed reports whether the player has acted since the last full raise
+// on the current street.
+func (p *Player) HasActed() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.acted
+}
+
+// commit moves amount chips from the player's stack into the current
+// street bet and updates the all-in flag. It is used by the table engine,
+// which is responsible for validating the action before calling it.
+func (p *Player) commit(amount Chips) (Chips, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if amount < 0 {
+		return 0, fmt.Errorf("negative bet amount %d", amount)
+	}
+
+	if amount > p.currentChipsAmount {
+		return 0, fmt.Errorf("bet amount %d exceeds stack %d", amount, p.currentChipsAmount)
+	}
+
+	p.currentChipsAmount -= amount
+	p.streetBet += amount
+
+	if p.currentChipsAmount == 0 {
+		p.allIn = true
+	}
+
+	return amount, nil
+}
+
+// resetForStreet clears the per-street action state. The all-in flag is
+// intentionally preserved for the rest of the hand.
+func (p *Player) resetForStreet() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.streetBet = 0
+	p.acted = false
+}
+
+func (p *Player) markActed() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.acted = true
+}
+
+func (p *Player) fold() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.Active = false
+	p.acted = true
+}
+
+// addChips returns chips to the player's stack (pot awards and refunds).
+func (p *Player) addChips(amount Chips) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if amount < 0 {
+		return fmt.Errorf("negative chip amount %d", amount)
+	}
+
+	p.currentChipsAmount += amount
+
+	return nil
+}
+
 // GetPocketCards returns a copy of the pocket cards, so callers cannot
 // mutate the player's internal slice.
 func (p *Player) GetPocketCards() []*Card {
@@ -81,6 +175,8 @@ func (p *Player) AddCard(card *Card) error {
 }
 
 // Check validates the bet without touching the player's chips.
+//
+// Deprecated: use ActionCheck with Table.Act.
 func (p *Player) Check(bet *Bet) (Chips, error) {
 	if bet == nil {
 		return 0, errors.New("bet is nil")
@@ -94,6 +190,9 @@ func (p *Player) Check(bet *Bet) (Chips, error) {
 }
 
 // Call deducts the bet from the player's stack and returns the amount.
+//
+// Deprecated: use ActionCall with Table.Act, which also handles short
+// all-in calls.
 func (p *Player) Call(bet *Bet) (Chips, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -117,6 +216,8 @@ func (p *Player) Call(bet *Bet) (Chips, error) {
 
 // Raise deducts bet.Bet+bet.Over from the player's stack and returns
 // the total. The stack is never left negative.
+//
+// Deprecated: use ActionRaise with Table.Act.
 func (p *Player) Raise(bet *Bet) (Chips, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -139,18 +240,25 @@ func (p *Player) Raise(bet *Bet) (Chips, error) {
 	return total, nil
 }
 
-// ResetForHand clears the pocket cards and reactivates the player for a
-// new hand. Chips are not changed.
+// ResetForHand clears the pocket cards and per-hand state. A player with
+// chips is reactivated; a player with an empty stack sits the hand out.
+// Chips are not changed.
 func (p *Player) ResetForHand() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.Active = true
+	p.Active = p.currentChipsAmount > 0
 	p.pocketCards = make([]*Card, 0)
+	p.streetBet = 0
+	p.acted = false
+	p.allIn = false
 }
 
 // Fall deactivates the player, clears the pocket cards and returns the
 // committed amount. Chips are not deducted here.
+//
+// Deprecated: use ActionFold with Table.Act, which keeps the folded
+// player's cards for hand history.
 func (p *Player) Fall(bet *Bet) (Chips, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
