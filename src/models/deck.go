@@ -1,6 +1,9 @@
 package models
 
-import "hands/src/helpers"
+import (
+	"math/rand"
+	"time"
+)
 
 const DeckLength = 52
 
@@ -21,10 +24,36 @@ func (e EofError) Error() string {
 // Deck представляет карточную колоду
 type Deck struct {
 	cards []*Card
+	rng   *rand.Rand
 }
 
+// NewDeck returns a Deck with an internal *rand.Rand seeded from time.Now().UnixNano().
 func NewDeck() *Deck {
-	return &Deck{cards: make([]*Card, 0)}
+	return &Deck{
+		cards: make([]*Card, 0),
+		rng:   rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
+}
+
+// NewDeckWithRand returns a Deck driven by the given *rand.Rand, so shuffles are
+// fully deterministic when the same seed is used. A nil rng falls back to a
+// default source seeded from the current time.
+func NewDeckWithRand(rng *rand.Rand) *Deck {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	return &Deck{cards: make([]*Card, 0), rng: rng}
+}
+
+// rngSource returns the deck's *rand.Rand, falling back to a default source
+// when the field is nil (e.g. a Deck created via a struct literal).
+func (d *Deck) rngRand() *rand.Rand {
+	if d.rng == nil {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	return d.rng
 }
 
 // makeOrderedCards возвращает []*Card, заполненный картами, упорядоченными по мастям и значениям
@@ -57,29 +86,27 @@ func makeOrderedCards() []*Card {
 	return cards
 }
 
-// Shuffle заполняет слайс d.cards уникальными случайными значениями из полного упорядоченного набора карт.
-// Возвращает d
+// Shuffle resets the deck to the full 52-card ordered set and applies an unbiased
+// Fisher-Yates shuffle, so it always contains exactly 52 unique non-nil cards.
+// It is safe to call repeatedly and always returns a full deck. Возвращает d
 func (d *Deck) Shuffle() *Deck {
-	control := make(map[int]struct{})
-	orderedCards := makeOrderedCards()
+	cards := makeOrderedCards()
 
-	d.cards = make([]*Card, len(orderedCards))
+	rng := d.rngRand()
 
-	for i := 0; i < len(orderedCards); i++ {
-		num := helpers.GenerateRandomNumInRange(len(orderedCards))
-
-		if _, ok := control[num]; !ok {
-			control[num] = struct{}{}
-
-			d.cards[i] = orderedCards[num]
-		}
+	for i := len(cards) - 1; i > 0; i-- {
+		j := rng.Intn(i + 1)
+		cards[i], cards[j] = cards[j], cards[i]
 	}
+
+	d.cards = cards
 
 	return d
 }
 
-func (d *Deck) randomCard() *Card {
-	return NewRandomCard()
+// Len returns the number of cards left in the deck.
+func (d *Deck) Len() int {
+	return len(d.cards)
 }
 
 // pop удаляет последний элемент слайса cards (верхнюю карту в колоде) и возвращает его.
