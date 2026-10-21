@@ -6,7 +6,7 @@ Texas Hold'em poker game library for Go.
 
 ## Current version
 
-v0.4.0-alpha
+v0.5.0-alpha
 
 ## Usage
 
@@ -44,11 +44,13 @@ func main() {
 
 ## Betting
 
-`Table` implements no-limit Texas Hold'em betting, including blinds,
+`Table` implements no-limit Texas Hold'em betting, including blinds, antes,
 turn order, all-ins and side pots.
 
 ```go
 rules := models.DefaultTableRules(1, 2) // small blind, big blind
+rules.Ante = 1                          // 1 chip from every active player
+// rules.AnteMode = models.AnteBigBlind // or only from the big blind
 
 table, err := models.NewTableWithRules(
 	"main", "cash", nil, models.CashTableType, 6, rules,
@@ -63,8 +65,8 @@ for _, name := range []string{"alice", "bob", "carol"} {
 	}
 }
 
-// StartHand resets the table, posts blinds, deals pocket cards and opens
-// preflop betting.
+// StartHand resets the table, posts antes and blinds, deals pocket cards and
+// opens preflop betting.
 if _, err := table.StartHand(); err != nil {
 	log.Fatal(err)
 }
@@ -109,14 +111,24 @@ for _, pot := range results {
 }
 ```
 
+Antes are optional and controlled by `TableRules.Ante` (0 disables them).
+`TableRules.AnteMode` selects `models.AntePerPlayer` (the default) so every
+active player posts, or `models.AnteBigBlind` so only the big blind posts.
+Antes are **dead money** posted before the blinds: they go into the pot but
+do not count toward `streetBet`, `currentBet`, `ToCall`, the minimum raise or
+the raise cap. A short stack posts `min(ante, stack)` and is all-in for the
+rest of the hand; it is still dealt pocket cards but cannot act and can only
+win pots it is eligible for.
+
 Bet and raise `Action.Amount` is the player's **total commitment on the
 current street** ("raise to"), not the additional amount. There is no
 separate all-in action: a call, bet or raise automatically becomes all-in
 when it uses the rest of the player's stack.
 
-`TableRules` controls the minimum players, blinds, minimum raise, optional
-per-street raise cap and odd-chip rule. Only no-limit Hold'em is supported;
-antes and straddles are not part of the current API.
+`TableRules` controls the minimum players, blinds, antes (amount and
+per-player vs big-blind mode), minimum raise, optional per-street raise cap
+and odd-chip rule. Only no-limit Hold'em is supported; straddles are not part
+of the current API.
 
 ## Development
 
