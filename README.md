@@ -6,7 +6,7 @@ Texas Hold'em poker game library for Go.
 
 ## Current version
 
-v0.3.1-alpha
+v0.4.0-alpha
 
 ## Usage
 
