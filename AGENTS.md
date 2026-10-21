@@ -12,7 +12,7 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 
 ## Layout
 
-- `src/models` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table`, `Player`, `Pot`, `Bet`, `IdMaker`.
+- `src/models` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table` (betting state machine in `betting.go`, side pots in `sidepots.go`, rules in `rules.go`), `Player`, `Pot`, legacy `Bet`, `IdMaker`.
 - `src/helpers` — combinations (gonum), random IDs (`crypto/rand`), random ints.
 - Imports use `hands/src/...`, not a VCS path. No root package, no `internal/`.
 - `cmd/` is gitignored (`cmd`, `cmd/*`). `cmd/test/main.go` is an untracked local scratch playground — not an entrypoint, don't put real code there.
@@ -23,18 +23,23 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 - Parsing is strict: `ParseCard(s) (*Card, error)` validates and uppercases; `NewCardFromString` is deprecated and PANICS on invalid input. `NewHandFromStrings`/`NewHandFromCards` return `(*Hand, error)`.
 - Suits: type `Suit`, `CardSuit`, `SuitColor`, `Suits`, `SuitsNum`, field `Card.Suit` (a `*CardSuit`; access the suit itself as `c.Suit.Suit`). `Clubs` is current; `Crosses` is a deprecated alias. `Suite`-named identifiers remain only as deprecated wrappers (`SuiteFromString`, `CompareSuites`).
 - `Hand` stores a sorted `[]*Card` (exactly 5 cards). `Hand.Define()` returns the category; `Hand.Compare` ranks two hands (total order incl. kickers, wheel A-2-3-4-5, wheel straight flush, royal flush). `Hand.CountPairs` returns the number of pairs (0..2), not paired cards.
-- `NewDeck()` starts empty. `NewDeckWithRand(*rand.Rand)` enables deterministic tests; `Deck.Shuffle()` is Fisher-Yates over 52 unique cards; `Deck.Len()` exists. Intended flow: `NewTable(...).StartHand()` → `PreFlop()` → `Flop()` → `Turn()` → `River()`; deal methods on an unshuffled table return an error.
-- `Table.StartHand()` requires >=2 players; it resets board, pot and players, shuffles and advances the dealer. `PreFlop` deals 2 cards to active players with no burn; `Flop`/`Turn`/`River` burn one card and validate board length (0/3/4).
-- `Table.Blinds()` requires >=2 active players, skips inactive seats, and in heads-up the dealer posts the small blind.
+- `NewDeck()` starts empty. `NewDeckWithRand(*rand.Rand)` enables deterministic tests; `Deck.Shuffle()` resets to 52 unique cards and shuffles; `Deck.Len()` exists. `StartHand` shuffles afresh every hand.
+- Betting flow: `NewTableWithRules(...)` (or the legacy `NewTable`) → `StartHand()` → `Act(...)` until the street completes → `NextStreet()` → repeat → `Showdown()`. `StartHand` resets state, sits out empty stacks, moves the dealer, posts blinds, deals pockets and opens preflop betting. `Act` enforces turn order, min raises, short all-ins and the raise cap.
+- `Action{PlayerID, Type, Amount}`. `Amount` for `bet`/`raise` is the player's total street commitment ("raise to"). There is no explicit all-in action: using the rest of the stack makes the action all-in. `LegalActions` returns the available types; `ToCall` returns the missing amount.
+- `Street`: `preflop`, `flop`, `turn`, `river`, `showdown`. `HandPhase`: `waiting`, `betting`, `street-complete`, `showdown`, `complete`. `NextStreet` only runs in `street-complete`; after the river it moves to `showdown`. If every remaining player is all-in, `NextStreet` runs the board out automatically.
+- `TableRules` (in `rules.go`) has `MinPlayers`, `SmallBlind`, `BigBlind`, `MinRaise` (0 → big blind), `MaxRaisesPerStreet` (0 → unlimited; counts all aggressive actions) and `OddChipRule` (`OddChipLeftOfDealer`). Only no-limit Hold'em is implemented.
+- Side pots: `Showdown` builds layers from total contributions, refunds unmatched chips, excludes folded players, evaluates each layer's eligible players, splits ties and assigns odd chips left of the dealer. `ResolvePots` is the read-only preview; `LastResults` returns the last payouts. `ResolveWinner` is deprecated legacy behavior.
+- `Table.Blinds`, `PreFlop`, `Flop`, `Turn`, `River`, and `Player.Check/Call/Raise/Fall` are deprecated low-level helpers that bypass the state machine. `Player.ResetForHand()` activates only players with chips; folded players keep their cards for history.
 - `Table.ResolveWinner()` requires exactly 5 board cards, evaluates only active players, returns ALL tied winner IDs sorted alphabetically, and never panics. `GetFirstPosition`, `GetSecondPosition`, `GetDealer` return `(*Player, error)`. `Table.GetPlayersHand` still requires exactly 7 cards (5 board + 2 pocket).
-- `Player` uses an unexported mutex, returns copies of pocket cards, validates bets and never goes negative. `Player.ResetForHand()` exists. `Pot.Register` registers new players and errors on duplicates; `Pot.Reset` zeroes the total; negative bets are rejected.
+- `Player` uses an unexported mutex, returns copies of pocket cards, validates bets and never goes negative. `Pot.Register` registers new players and errors on duplicates; `Pot.Reset` zeroes the total; negative bets are rejected. `Pot.RemoveChips` backs refunds/payouts.
 - Comments and error messages mix Russian and English. Match the surrounding language instead of translating.
 
 ## Known limitations
 
-- `TableRules` is an empty placeholder (`TODO`).
-- No betting-round state machine: `Table.CurrentMove` is unused, there are no per-street bet validations and no turn-order enforcement.
-- No side pots / all-in handling; `ResolveWinner` returns winner IDs only and does not distribute chips.
+- No-limit Hold'em only; fixed-limit and pot-limit are not implemented.
+- No antes, straddles, rebuys, late registration or tournament payout/ICM logic.
+- Hand history/action log is not persisted; `LastResults` only keeps the latest payouts.
+- `ResolveWinner` remains a deprecated, non-pot-aware convenience.
 - `cmd/` is still gitignored scratch space.
 
 ## Git and releases
@@ -42,4 +47,4 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 `dev` is the integration branch, `master` is release-only. This overrides the global "branch from `origin/master`" default:
 - Branch from `origin/dev` and PR into `dev`; back-merge `master` into `dev` when needed.
 - Release: PR `dev` → `master`, tag `vX.Y.Z-alpha` on the merge commit, and bump `README.md` "Current version" in that same PR.
-- `README.md` is being bumped to `v0.3.0-alpha` on this branch; the previous tag was `v0.2.1-alpha` — expect that drift.
+- The current released tag is `v0.3.1-alpha`; the betting-engine branch targets `v0.4.0-alpha`. Bump `README.md` "Current version" in the release PR.
