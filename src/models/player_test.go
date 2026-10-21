@@ -346,6 +346,115 @@ func TestPlayerConcurrentCall(t *testing.T) {
 	}
 }
 
+func TestPlayerCommitAndAllIn(t *testing.T) {
+	p := NewPlayer("alice", stubIDMaker{"alice"}, 100)
+
+	paid, err := p.commit(40)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if paid != 40 {
+		t.Fatalf("commit paid = %d, want 40", paid)
+	}
+
+	if got := p.GetCurrentChipsAmount(); got != 60 {
+		t.Fatalf("stack = %d, want 60", got)
+	}
+
+	if got := p.GetStreetBet(); got != 40 {
+		t.Fatalf("street bet = %d, want 40", got)
+	}
+
+	if p.IsAllIn() {
+		t.Fatal("player is all-in too early")
+	}
+
+	if _, err := p.commit(61); err == nil {
+		t.Fatal("commit above stack succeeded")
+	}
+
+	if p.GetCurrentChipsAmount() != 60 || p.GetStreetBet() != 40 {
+		t.Fatal("rejected commit changed player state")
+	}
+
+	if _, err := p.commit(60); err != nil {
+		t.Fatalf("all-in commit: %v", err)
+	}
+
+	if !p.IsAllIn() {
+		t.Fatal("player is not all-in at zero chips")
+	}
+
+	p.resetForStreet()
+
+	if got := p.GetStreetBet(); got != 0 {
+		t.Fatalf("street bet after reset = %d, want 0", got)
+	}
+
+	if !p.IsAllIn() {
+		t.Fatal("resetForStreet cleared the all-in flag")
+	}
+}
+
+func TestPlayerResetForHandSitsOutEmptyStack(t *testing.T) {
+	broke := NewPlayer("broke", stubIDMaker{"broke"}, 0)
+	broke.Active = true
+
+	broke.ResetForHand()
+
+	if broke.Active {
+		t.Fatal("empty-stack player is active after ResetForHand")
+	}
+
+	funded := NewPlayer("funded", stubIDMaker{"funded"}, 10)
+	funded.Active = false
+
+	if err := funded.AddCard(mustCards(t, "AS")[0]); err != nil {
+		t.Fatalf("AddCard: %v", err)
+	}
+
+	if _, err := funded.commit(5); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	funded.ResetForHand()
+
+	if !funded.Active {
+		t.Fatal("funded player is inactive after ResetForHand")
+	}
+
+	if got := len(funded.GetPocketCards()); got != 0 {
+		t.Fatalf("pocket cards after ResetForHand = %d, want 0", got)
+	}
+
+	if funded.GetStreetBet() != 0 || funded.HasActed() || funded.IsAllIn() {
+		t.Fatal("ResetForHand did not clear per-hand state")
+	}
+}
+
+func TestPlayerFoldKeepsCards(t *testing.T) {
+	p := NewPlayer("alice", stubIDMaker{"alice"}, 100)
+
+	if err := p.AddCard(mustCards(t, "AS")[0]); err != nil {
+		t.Fatalf("AddCard: %v", err)
+	}
+
+	p.fold()
+
+	if p.Active {
+		t.Fatal("player is active after fold")
+	}
+
+	if !p.HasActed() {
+		t.Fatal("folded player has not acted")
+	}
+
+	if got := len(p.GetPocketCards()); got != 1 {
+		t.Fatalf("fold cleared pocket cards: got %d, want 1", got)
+	}
+}
+
 func TestPlayerConcurrentAddCardAndCall(t *testing.T) {
 	p := NewPlayer("alice", stubIDMaker{"alice"}, 10)
 	cards := mustCards(t, "2C", "3C", "4C", "5C", "6C")
