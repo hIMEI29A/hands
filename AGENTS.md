@@ -4,10 +4,11 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 
 ## Commands
 
-- The shell exports a stale `GOROOT` (`go1.22.9` while the `go` binary is newer), so plain `go build` fails with "version does not match go tool version". ALWAYS run Go as `env -u GOROOT go ...`.
-- Repo-wide checks: `env -u GOROOT go build ./...` and `env -u GOROOT go vet ./...`.
-- Tests exist for every package (card, deck, hand, player, pot, table, helpers). Fast check: `env -u GOROOT go test ./... -short -count=1` — `-short` skips the exhaustive C(52,5) hand-category enumeration in `src/models`. Full run with `-race` takes ~17s for `src/models`.
+- The shell exports a stale `GOROOT` (`go1.22.9` while the `go` binary is newer), so plain `go build` fails with "version does not match go tool version". ALWAYS run Go as `env -u GOROOT go ...`. The `Makefile` already handles this via `GO ?= env -u GOROOT go`; CI does not need the workaround because `GOROOT` is unset there.
+- Local checks go through `make`: `make build`, `make vet`, `make fmt`, `make test` (with `-race`), `make test-short`, `make lint` (requires `golangci-lint` locally), and `make check` (`fmt build vet test`).
+- Tests exist for every package (card, deck, hand, player, pot, table, helpers). `-short` skips the exhaustive C(52,5) hand-category enumeration in `src/models`; the full `-race` run takes ~17s for that package.
 - First build needs `go mod download` (fetches gonum); offline environments fail here.
+- CI lives in `.github/workflows/ci.yml` and runs gofmt, build, vet, tests on Go `1.20.x` and `stable`, plus non-blocking `golangci-lint` (config in `.golangci.yml`). Only the first four checks must pass before merge; lint findings are advisory.
 
 ## Layout
 

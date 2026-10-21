@@ -1,0 +1,8 @@
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+run:
+  timeout: 5m
