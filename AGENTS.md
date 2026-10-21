@@ -12,7 +12,7 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 
 ## Layout
 
-- `src/models` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table` (betting state machine in `betting.go`, side pots in `sidepots.go`, rules in `rules.go`), `Player`, `Pot`, legacy `Bet`, `IdMaker`.
+- `src/models` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table` (betting state machine in `betting.go`, side pots in `sidepots.go`, rules in `rules.go`, ante posting and blind position in `antes.go`), `Player`, `Pot`, legacy `Bet`, `IdMaker`.
 - `src/helpers` — combinations (gonum), random IDs (`crypto/rand`), random ints.
 - Imports use `hands/src/...`, not a VCS path. No root package, no `internal/`.
 - `cmd/` is gitignored (`cmd`, `cmd/*`). `cmd/test/main.go` is an untracked local scratch playground — not an entrypoint, don't put real code there.
@@ -24,10 +24,11 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 - Suits: type `Suit`, `CardSuit`, `SuitColor`, `Suits`, `SuitsNum`, field `Card.Suit` (a `*CardSuit`; access the suit itself as `c.Suit.Suit`). `Clubs` is current; `Crosses` is a deprecated alias. `Suite`-named identifiers remain only as deprecated wrappers (`SuiteFromString`, `CompareSuites`).
 - `Hand` stores a sorted `[]*Card` (exactly 5 cards). `Hand.Define()` returns the category; `Hand.Compare` ranks two hands (total order incl. kickers, wheel A-2-3-4-5, wheel straight flush, royal flush). `Hand.CountPairs` returns the number of pairs (0..2), not paired cards.
 - `NewDeck()` starts empty. `NewDeckWithRand(*rand.Rand)` enables deterministic tests; `Deck.Shuffle()` resets to 52 unique cards and shuffles; `Deck.Len()` exists. `StartHand` shuffles afresh every hand.
-- Betting flow: `NewTableWithRules(...)` (or the legacy `NewTable`) → `StartHand()` → `Act(...)` until the street completes → `NextStreet()` → repeat → `Showdown()`. `StartHand` resets state, sits out empty stacks, moves the dealer, posts blinds, deals pockets and opens preflop betting. `Act` enforces turn order, min raises, short all-ins and the raise cap.
+- Betting flow: `NewTableWithRules(...)` (or the legacy `NewTable`) → `StartHand()` → `Act(...)` until the street completes → `NextStreet()` → repeat → `Showdown()`. `StartHand` resets state, sits out empty stacks, moves the dealer, posts antes and blinds, deals pockets and opens preflop betting. `Act` enforces turn order, min raises, short all-ins and the raise cap.
 - `Action{PlayerID, Type, Amount}`. `Amount` for `bet`/`raise` is the player's total street commitment ("raise to"). There is no explicit all-in action: using the rest of the stack makes the action all-in. `LegalActions` returns the available types; `ToCall` returns the missing amount.
 - `Street`: `preflop`, `flop`, `turn`, `river`, `showdown`. `HandPhase`: `waiting`, `betting`, `street-complete`, `showdown`, `complete`. `NextStreet` only runs in `street-complete`; after the river it moves to `showdown`. If every remaining player is all-in, `NextStreet` runs the board out automatically.
-- `TableRules` (in `rules.go`) has `MinPlayers`, `SmallBlind`, `BigBlind`, `MinRaise` (0 → big blind), `MaxRaisesPerStreet` (0 → unlimited; counts all aggressive actions) and `OddChipRule` (`OddChipLeftOfDealer`). Only no-limit Hold'em is implemented.
+- `TableRules` (in `rules.go`) has `MinPlayers`, `SmallBlind`, `BigBlind`, `Ante`, `AnteMode`, `MinRaise` (0 → big blind), `MaxRaisesPerStreet` (0 → unlimited; counts all aggressive actions) and `OddChipRule` (`OddChipLeftOfDealer`). `Ante == 0` disables antes. `AnteMode` has `AntePerPlayer` (`"per-player"`, default when empty) and `AnteBigBlind` (`"big-blind"`). Only no-limit Hold'em is implemented.
+- Antes (`src/models/antes.go`): `StartHand` and the deprecated `Blinds()` helper post antes before the blinds. Per-player mode posts from every active player; big-blind mode posts only from the big blind. Antes are dead money: they go into the pot but not into `streetBet`, `currentBet`, `ToCall`, minimum raise or raise-cap calculations. A short stack posts `min(ante, stack)`, becomes all-in, stays active, gets pocket cards, cannot act and can only win pots it is eligible for. `Table.Ante() Chips` returns the configured ante.
 - Side pots: `Showdown` builds layers from total contributions, refunds unmatched chips, excludes folded players, evaluates each layer's eligible players, splits ties and assigns odd chips left of the dealer. `ResolvePots` is the read-only preview; `LastResults` returns the last payouts. `ResolveWinner` is deprecated legacy behavior.
 - `Table.Blinds`, `PreFlop`, `Flop`, `Turn`, `River`, and `Player.Check/Call/Raise/Fall` are deprecated low-level helpers that bypass the state machine. `Player.ResetForHand()` activates only players with chips; folded players keep their cards for history.
 - `Table.ResolveWinner()` requires exactly 5 board cards, evaluates only active players, returns ALL tied winner IDs sorted alphabetically, and never panics. `GetFirstPosition`, `GetSecondPosition`, `GetDealer` return `(*Player, error)`. `Table.GetPlayersHand` still requires exactly 7 cards (5 board + 2 pocket).
@@ -37,7 +38,7 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 ## Known limitations
 
 - No-limit Hold'em only; fixed-limit and pot-limit are not implemented.
-- No antes, straddles, rebuys, late registration or tournament payout/ICM logic.
+- No straddles, rebuys, late registration or tournament payout/ICM logic.
 - Hand history/action log is not persisted; `LastResults` only keeps the latest payouts.
 - `ResolveWinner` remains a deprecated, non-pot-aware convenience.
 - `cmd/` is still gitignored scratch space.
