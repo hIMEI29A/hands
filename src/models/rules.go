@@ -12,25 +12,42 @@ const (
 	OddChipLeftOfDealer OddChipRule = "left-of-dealer"
 )
 
+// AnteMode controls who posts the ante.
+type AnteMode string
+
+const (
+	// AntePerPlayer makes every player in the hand post the ante.
+	AntePerPlayer AnteMode = "per-player"
+
+	// AnteBigBlind makes only the big blind post the ante.
+	AnteBigBlind AnteMode = "big-blind"
+)
+
 // TableRules describes the betting rules of a no-limit Texas Hold'em
-// table. A zero value is not valid; use DefaultTableRules or
-// NewTableWithRules, which normalize optional fields.
+// table, including antes. A zero value is not valid; use
+// DefaultTableRules or NewTableWithRules, which normalize optional
+// fields.
 type TableRules struct {
 	MinPlayers         int
 	SmallBlind         Chips
 	BigBlind           Chips
+	Ante               Chips
+	AnteMode           AnteMode
 	MinRaise           Chips
 	MaxRaisesPerStreet int
 	OddChipRule        OddChipRule
 }
 
 // DefaultTableRules builds rules for the given blinds. MinRaise defaults to
-// the big blind, raises are unlimited and odd chips go left of the dealer.
+// the big blind, raises are unlimited, no ante is posted by default and
+// odd chips go left of the dealer.
 func DefaultTableRules(sb, bb Chips) *TableRules {
 	return &TableRules{
 		MinPlayers:         2,
 		SmallBlind:         sb,
 		BigBlind:           bb,
+		Ante:               0,
+		AnteMode:           AntePerPlayer,
 		MinRaise:           bb,
 		MaxRaisesPerStreet: 0,
 		OddChipRule:        OddChipLeftOfDealer,
@@ -52,6 +69,10 @@ func (r *TableRules) normalized() *TableRules {
 
 	if cp.MinRaise == 0 {
 		cp.MinRaise = cp.BigBlind
+	}
+
+	if cp.AnteMode == "" {
+		cp.AnteMode = AntePerPlayer
 	}
 
 	if cp.OddChipRule == "" {
@@ -81,6 +102,16 @@ func (r *TableRules) Validate() error {
 
 	if r.BigBlind < r.SmallBlind {
 		return fmt.Errorf("big blind %d must not be smaller than small blind %d", r.BigBlind, r.SmallBlind)
+	}
+
+	if r.Ante < 0 {
+		return fmt.Errorf("ante must not be negative, got %d", r.Ante)
+	}
+
+	switch r.AnteMode {
+	case "", AntePerPlayer, AnteBigBlind:
+	default:
+		return fmt.Errorf("unknown ante mode %q", r.AnteMode)
 	}
 
 	if r.MinRaise <= 0 {

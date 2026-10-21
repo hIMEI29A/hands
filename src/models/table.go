@@ -149,6 +149,14 @@ func (t *Table) BigBlind() Chips {
 	return t.rules.BigBlind
 }
 
+// Ante returns the configured ante amount.
+func (t *Table) Ante() Chips {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
+	return t.rules.Ante
+}
+
 // getPlayerByID searches the players without taking the table lock.
 // Callers must hold at least a read lock on t.m.
 func (t *Table) getPlayerByID(id string) *Player {
@@ -321,8 +329,8 @@ func (t *Table) GetPlayersHand(pocket []*Card) (*Hand, error) {
 
 // StartHand prepares and starts a complete hand: it resets per-hand
 // state, sits out players with empty stacks, shuffles the deck, moves the
-// dealer button, posts blinds, deals pocket cards and opens preflop
-// betting.
+// dealer button, posts antes and blinds, deals pocket cards and opens
+// preflop betting.
 func (t *Table) StartHand() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
@@ -370,8 +378,16 @@ func (t *Table) StartHand() (*Table, error) {
 	t.raisesThisStreet = 0
 	t.currentActor = -1
 
-	_, bigBlindIdx, err := t.postBlindsLocked()
+	smallBlindIdx, bigBlindIdx, err := t.blindIndexesLocked()
 	if err != nil {
+		return nil, err
+	}
+
+	if err := t.postAntesLocked(bigBlindIdx); err != nil {
+		return nil, err
+	}
+
+	if err := t.postBlindsAtLocked(smallBlindIdx, bigBlindIdx); err != nil {
 		return nil, err
 	}
 
@@ -406,9 +422,9 @@ func (t *Table) nextActiveIndex(start int) (int, error) {
 	return 0, errors.New("table has no active players")
 }
 
-// Blinds posts the small and big blind. It is a low-level helper kept for
-// manual dealing; StartHand posts the blinds itself. Calling it after
-// blinds have already been posted returns an error.
+// Blinds posts the antes and the small and big blind. It is a low-level
+// helper kept for manual dealing; StartHand posts them itself. Calling it
+// after blinds have already been posted returns an error.
 //
 // Deprecated: use StartHand, which sets up the complete hand and betting
 // state.
@@ -426,53 +442,31 @@ func (t *Table) Blinds() (*Table, error) {
 		}
 	}
 
-	if _, _, err := t.postBlindsLocked(); err != nil {
+	smallIdx, bigIdx, err := t.blindIndexesLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.postAntesLocked(bigIdx); err != nil {
+		return nil, err
+	}
+
+	if err := t.postBlindsAtLocked(smallIdx, bigIdx); err != nil {
 		return nil, err
 	}
 
 	return t, nil
 }
 
-// postBlindsLocked posts the small and big blind for the current hand and
+// postBlindsAtLocked posts the small and big blind at the given seats and
 // initializes the preflop bet size. Requires t.m to be held.
-func (t *Table) postBlindsLocked() (int, int, error) {
-	activeNum := t.activeCountLocked()
-	if activeNum < 2 {
-		return 0, 0, fmt.Errorf("blinds require at least 2 active players, got %d", activeNum)
-	}
-
-	var (
-		smallIdx int
-		err      error
-	)
-
-	if activeNum == 2 {
-		// Heads-up: the dealer posts the small blind.
-		smallIdx = t.Dealer
-		if !t.Players[smallIdx].Active {
-			smallIdx, err = t.nextActiveIndex(t.Dealer + 1)
-			if err != nil {
-				return 0, 0, err
-			}
-		}
-	} else {
-		smallIdx, err = t.nextActiveIndex(t.Dealer + 1)
-		if err != nil {
-			return 0, 0, err
-		}
-	}
-
-	bigIdx, err := t.nextActiveIndex(smallIdx + 1)
-	if err != nil {
-		return 0, 0, err
-	}
-
+func (t *Table) postBlindsAtLocked(smallIdx, bigIdx int) error {
 	if err := t.postBlindLocked(t.Players[smallIdx], t.rules.SmallBlind); err != nil {
-		return 0, 0, err
+		return err
 	}
 
 	if err := t.postBlindLocked(t.Players[bigIdx], t.rules.BigBlind); err != nil {
-		return 0, 0, err
+		return err
 	}
 
 	t.currentBet = t.rules.BigBlind
@@ -480,7 +474,7 @@ func (t *Table) postBlindsLocked() (int, int, error) {
 	t.lastFullRaiseBet = t.rules.BigBlind
 	t.raisesThisStreet = 0
 
-	return smallIdx, bigIdx, nil
+	return nil
 }
 
 // postBlindLocked deducts min(blind, stack) from the player and records it
