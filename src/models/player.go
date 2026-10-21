@@ -139,6 +139,16 @@ func (p *Player) Raise(bet *Bet) (Chips, error) {
 	return total, nil
 }
 
+// ResetForHand clears the pocket cards and reactivates the player for a
+// new hand. Chips are not changed.
+func (p *Player) ResetForHand() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.Active = true
+	p.pocketCards = make([]*Card, 0)
+}
+
 // Fall deactivates the player, clears the pocket cards and returns the
 // committed amount. Chips are not deducted here.
 func (p *Player) Fall(bet *Bet) (Chips, error) {
