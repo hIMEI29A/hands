@@ -85,6 +85,19 @@ func (p *Player) HasActed() bool {
 // street bet and updates the all-in flag. It is used by the table engine,
 // which is responsible for validating the action before calling it.
 func (p *Player) commit(amount Chips) (Chips, error) {
+	return p.commitInternal(amount, true)
+}
+
+// commitDead deducts dead money (an ante) without adding it to the current
+// street bet. The all-in flag is updated when the stack reaches zero.
+func (p *Player) commitDead(amount Chips) (Chips, error) {
+	return p.commitInternal(amount, false)
+}
+
+// commitInternal moves amount chips from the player's stack and updates
+// the all-in flag. Chips are added to the current street bet only when
+// countsTowardStreet is true.
+func (p *Player) commitInternal(amount Chips, countsTowardStreet bool) (Chips, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -97,7 +110,10 @@ func (p *Player) commit(amount Chips) (Chips, error) {
 	}
 
 	p.currentChipsAmount -= amount
-	p.streetBet += amount
+
+	if countsTowardStreet {
+		p.streetBet += amount
+	}
 
 	if p.currentChipsAmount == 0 {
 		p.allIn = true
