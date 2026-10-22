@@ -328,9 +328,9 @@ func (t *Table) GetPlayersHand(pocket []*Card) (*Hand, error) {
 }
 
 // StartHand prepares and starts a complete hand: it resets per-hand
-// state, sits out players with empty stacks, shuffles the deck, moves the
-// dealer button, posts antes and blinds, deals pocket cards and opens
-// preflop betting.
+// state, sits out players with empty stacks or an active sit-out, shuffles
+// the deck, moves the dealer button, posts antes and blinds, deals pocket
+// cards and opens preflop betting.
 func (t *Table) StartHand() (*Table, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
@@ -341,6 +341,10 @@ func (t *Table) StartHand() (*Table, error) {
 
 	funded := 0
 	for _, p := range t.Players {
+		if p.IsSittingOut() {
+			continue
+		}
+
 		if p.GetCurrentChipsAmount() > 0 {
 			funded++
 		}

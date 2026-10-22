@@ -132,10 +132,11 @@ of the current API.
 
 ## Tournament SNG
 
-`src/tournament` adds a single-table freezeout sit-and-go on top of `Table`.
-Blind levels advance by **completed hands**, not wall-clock time. Prizes are
-abstract units, not tournament chips. With `hands/src/engine` and
-`hands/src/tournament` imported:
+`src/tournament` adds a single-table sit-and-go on top of `Table`. The default
+configuration is a freezeout; late registration, re-entry, add-ons, fixed
+bounties and sit-out are opt-in. Blind levels advance by **completed hands**,
+not wall-clock time. Prizes are abstract units, not tournament chips. With
+`hands/src/engine` and `hands/src/tournament` imported:
 
 ```go
 rules := &tournament.TournamentRules{
@@ -222,17 +223,19 @@ use `Act`, `NextStreet` and `Showdown` to mutate tournament play.
 ### Buy-ins and prize pools
 
 `BuyIn` is an abstract prize unit per entry and `Guarantee` is a minimum
-pool. `Fee` is charged per entry but is not part of the pool:
-`PrizePool()` returns `max(BuyIn * registered entries, Guarantee)`, so it
-grows during registration. `EntryCost()` returns `BuyIn + Fee` and
-`FeesCollected()` returns the total fees for registered entries. Three payout
-modes are available:
+pool. `Fee` is charged per entry but is not part of the pool. Bounties and
+add-on fees are also outside the pool. `PrizePool()` returns
+`max(BuyIn * entries + AddOnBuyIn * add-ons, Guarantee)`, so it grows during
+registration and late registration. `EntryCost()` returns
+`BuyIn + Fee + Bounty`, `AddOnCost()` returns `AddOnBuyIn + AddOnFee`, and
+`FeesCollected()` returns `Fee * entries + AddOnFee * add-ons`. Entries include
+late registrations and re-entries. Three payout modes are available:
 
 - `PayoutModeFixed` (the default when `PayoutMode` is empty) pays the
-  absolute `Payouts` table. Without a `BuyIn` or `Guarantee` it keeps the
-  legacy behavior: payouts are abstract units and the prize pool is zero.
-  With accounting enabled, `Start` rejects a payout total above the pool;
-  a total below the pool leaves the remainder unawarded.
+  absolute `Payouts` table. Without a `BuyIn`, `Guarantee` or `AddOnBuyIn` it
+  keeps the legacy behavior: payouts are abstract units and the prize pool is
+  zero. With accounting enabled, `Start` rejects a payout total above the
+  pool; a total below the pool leaves the remainder unawarded.
 - `PayoutModePercent` pays `PercentPayouts`, whole percentages summing to 100.
 - `PayoutModeWinnerTakeAll` pays the whole pool to first place.
 
@@ -263,9 +266,99 @@ rules := &tournament.TournamentRules{
 // PrizePool() is max(100 * entries, 500); the fee is not included.
 ```
 
-Only single-table freezeout SNGs are implemented: buy-in, fee, guarantee and
-prize-pool accounting are supported, but there is no MTT, rebuy, re-entry,
-late registration, bounties, hand-for-hand play or ICM. `Payout.Amount` and
+### Late registration, re-entry and add-ons
+
+`LateRegUntilLevel` opens late registration for the first N blind levels
+(1-based, inclusive); 0 disables it. While the tournament is running,
+`Register` seats a late entrant with the starting stack into a free seat or
+the first busted seat, and fails when the table has no seat. Eliminated
+entries already in the standings are shifted down one place so the final
+field keeps unique places; re-entry does the same. `Level()` itself remains a
+0-based index.
+
+Re-entry (rebuy) requires `ReentryAllowed` and the same late-registration
+window. `Reenter(previousPlayerID)` takes the ID of a busted entry and returns
+a new player with a fresh starting stack, the same display name and a seat at
+the busted seat or a free one. Only one entry in a re-entry chain may be
+active at a time: the current entry must bust before another re-entry can be
+bought. Every entry has its own player ID and standing row: the old entry
+stays in `Standings` with its place, while the new entry starts from
+`StartingStack`. `MaxReentries` caps re-entries per entry chain (0 means
+unlimited), and `MaxPlayers` is a concurrent seat limit, not a total entry
+limit.
+
+`AddOnAfterLevel` (1-based; 0 disables) makes one add-on available to each
+live entry after that level completes. The window is between the
+level-completing `Showdown` and the first hand of the next level. `AddOn`
+adds `AddOnChips` to the stack and records the add-on for accounting; each
+entry may take at most one. The configured level must have a following level,
+so there is no add-on window after the final level. `AddOnCost()` returns
+`AddOnBuyIn + AddOnFee`.
+
+```go
+rules := &tournament.TournamentRules{
+	StartingStack: 1000,
+	BuyIn:         100,
+	Fee:           10,
+	Bounty:        5,
+	Levels: []tournament.BlindLevel{
+		{SmallBlind: 10, BigBlind: 20, Hands: 10},
+		{SmallBlind: 15, BigBlind: 30, Hands: 10},
+	},
+	LateRegUntilLevel: 2,    // first two levels, 1-based; 0 disables
+	ReentryAllowed:    true, // re-entry only while late registration is open
+	MaxReentries:      1,    // per entry chain; 0 means unlimited
+	AddOnAfterLevel:   1,
+	AddOnBuyIn:        20,
+	AddOnFee:          2,
+	AddOnChips:        1000,
+}
+
+// While late registration is open, Register creates and seats a new entry.
+late, err := tour.Register("dave")
+if err != nil {
+	log.Fatal(err)
+}
+
+// Reenter takes a busted entry's ID and returns the fresh entry.
+player, err := tour.Reenter(bustedPlayerID)
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(player.ID) // a new player ID, not bustedPlayerID
+
+// AddOn is available only between the configured level and the next hand.
+if err := tour.AddOn(late.ID); err != nil {
+	log.Fatal(err)
+}
+```
+
+All new rules fields are additive: their zero values preserve the original
+freezeout SNG behavior.
+
+### Bounties and sit-out
+
+`Bounty` is a fixed bounty per entry. It is collected with the entry cost but
+never funds the prize pool: `BountyPool()` returns `Bounty * entries`, and
+`BountiesPaid()` returns the bounty units awarded so far. When an entry busts,
+its bounty goes to the winners of the pot layer that eliminated it (the
+largest non-refunded layer the busted player was eligible for). A split pot
+splits the bounty evenly, with the remainder going clockwise from the dealer.
+The last survivor receives their own bounty, plus any unclaimed bounty, when
+the tournament finishes. `Standing.BountyWon` reports each entry's total.
+
+`SitOut(playerID)` and `SitIn(playerID)` operate between hands on a live
+entry. A sitting-out player keeps their chips but is not dealt into the next
+hands, posts no blinds or antes and does not hold the button. The state is
+exposed by `Standing.SittingOut` and `Player.IsSittingOut()`. Sitting in
+requires a positive stack, and sitting-out players do not count toward the
+table's minimum players.
+
+Only single-table SNGs are implemented. Late registration is limited to the
+configured level window, and re-entry requires that window to remain open.
+There is no MTT (including MTT re-entry), no progressive or knockout bounty
+(only a fixed per-entry bounty), no hand-for-hand play, no ICM or deal-making,
+and no persisted hand history. `Payout.Amount`, `BuyIn`, `Fee`, `Bounty` and
 `PrizePool()` are abstract `int` prize units, not tournament chips.
 
 ## Development
