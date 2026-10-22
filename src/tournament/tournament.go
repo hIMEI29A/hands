@@ -3,8 +3,9 @@
 //
 // A tournament runs one engine.Table from 2 to MaxPlayers players. Blinds
 // advance by completed hands, busted players receive a final place and the
-// last remaining player wins. Prizes are abstract units, not tournament
-// chips; the engine only moves chips between players.
+// last remaining player wins. Prize accounting (buy-in, fee, prize pool and
+// payouts) uses abstract integer units, not tournament chips; the engine
+// only moves chips between players.
 package tournament
 
 import (
@@ -42,13 +43,45 @@ type Payout struct {
 	Amount int
 }
 
+// PayoutMode selects how tournament prizes are calculated.
+type PayoutMode string
+
+// Payout modes.
+const (
+	// PayoutModeFixed uses TournamentRules.Payouts as absolute prize units.
+	PayoutModeFixed PayoutMode = "fixed"
+	// PayoutModePercent uses TournamentRules.PercentPayouts as percentages
+	// of the prize pool. Percentages must sum to 100.
+	PayoutModePercent PayoutMode = "percent"
+	// PayoutModeWinnerTakeAll awards the whole prize pool to first place.
+	PayoutModeWinnerTakeAll PayoutMode = "winner-take-all"
+)
+
+// PercentPayout assigns a whole percentage of the prize pool to a place.
+type PercentPayout struct {
+	Place   int
+	Percent int
+}
+
 // TournamentRules configures a single-table freezeout tournament.
+//
+// BuyIn and Fee are abstract units per entry; Fee is not part of the prize
+// pool. The prize pool is max(BuyIn*entries, Guarantee). With no BuyIn and no
+// Guarantee, fixed Payouts remain absolute prize units for backward
+// compatibility and the prize pool is zero. PayoutMode selects the payout
+// table; an empty mode means PayoutModeFixed. PercentPayouts is used only in
+// PayoutModePercent.
 type TournamentRules struct {
-	StartingStack engine.Chips
-	MinPlayers    int
-	MaxPlayers    int
-	Levels        []BlindLevel
-	Payouts       []Payout
+	StartingStack  engine.Chips
+	MinPlayers     int
+	MaxPlayers     int
+	Levels         []BlindLevel
+	Payouts        []Payout
+	BuyIn          int
+	Fee            int
+	Guarantee      int
+	PayoutMode     PayoutMode
+	PercentPayouts []PercentPayout
 }
 
 // Standing is a point-in-time view of one tournament entry.
@@ -115,6 +148,44 @@ func (t *Tournament) Rules() TournamentRules {
 	return cloneRules(t.rules)
 }
 
+// PrizePool returns the current prize pool in abstract prize units. It is
+// max(BuyIn * registered entries, Guarantee). In legacy fixed-payout mode
+// without a BuyIn or Guarantee the pool is zero. A zero pool can also mean a
+// funded tournament with no entries yet.
+func (t *Tournament) PrizePool() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.prizePoolLocked()
+}
+
+// EntryCost returns BuyIn plus Fee for one entry.
+func (t *Tournament) EntryCost() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.rules.BuyIn + t.rules.Fee
+}
+
+// FeesCollected returns the total fees for all registered entries. Fees are
+// not part of the prize pool.
+func (t *Tournament) FeesCollected() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.rules.Fee * len(t.entries)
+}
+
+// prizePoolLocked computes the prize pool. Requires at least a read lock.
+func (t *Tournament) prizePoolLocked() int {
+	pool := t.rules.BuyIn * len(t.entries)
+	if t.rules.Guarantee > pool {
+		pool = t.rules.Guarantee
+	}
+
+	return pool
+}
+
 // Register creates a player with the starting stack and adds them to the
 // tournament. Registration is only possible in StateRegistering.
 func (t *Tournament) Register(name string) (*engine.Player, error) {
@@ -163,8 +234,31 @@ func (t *Tournament) Start() error {
 		return fmt.Errorf("player limit %d exceeded", t.rules.MaxPlayers)
 	}
 
-	if len(t.rules.Payouts) > len(t.entries) {
-		return fmt.Errorf("cannot fill %d payout places with %d players", len(t.rules.Payouts), len(t.entries))
+	places := t.rules.payoutPlaces()
+	if places > len(t.entries) {
+		return fmt.Errorf("cannot fill %d payout places with %d players", places, len(t.entries))
+	}
+
+	pool := t.prizePoolLocked()
+
+	switch t.rules.PayoutMode {
+	case PayoutModeFixed:
+		if t.rules.accountingEnabled() {
+			total := 0
+			for _, payout := range t.rules.Payouts {
+				total += payout.Amount
+			}
+
+			if total > pool {
+				return fmt.Errorf("payout total %d exceeds prize pool %d", total, pool)
+			}
+		}
+	case PayoutModePercent, PayoutModeWinnerTakeAll:
+		if pool <= 0 {
+			return fmt.Errorf("prize pool must be positive in payout mode %s, got %d", t.rules.PayoutMode, pool)
+		}
+	default:
+		return fmt.Errorf("unknown payout mode %q", t.rules.PayoutMode)
 	}
 
 	table, err := engine.NewTableWithRules(
@@ -465,7 +559,18 @@ func (t *Tournament) advanceLevelIfDueLocked() {
 // awardPrizesLocked splits every place group's prize among its tied
 // entries. Requires the write lock.
 func (t *Tournament) awardPrizesLocked() {
-	prizes := splitPrizes(t.entries, t.rules.Payouts, buildSeatOrder(t.table))
+	var amounts map[int]int
+
+	switch t.rules.PayoutMode {
+	case PayoutModePercent:
+		amounts = percentPrizeAmounts(t.prizePoolLocked(), t.rules.PercentPayouts)
+	case PayoutModeWinnerTakeAll:
+		amounts = map[int]int{1: t.prizePoolLocked()}
+	default:
+		amounts = fixedPrizeAmounts(t.rules.Payouts)
+	}
+
+	prizes := splitPrizeAmounts(t.entries, amounts, buildSeatOrder(t.table))
 	for e, prize := range prizes {
 		e.prize = prize
 	}
@@ -504,13 +609,71 @@ func assignBustedPlaces(busted []*entry, remainingBefore int) {
 
 // splitPrizes groups the entries by place and splits the payout places
 // consumed by each group. A group at place p with k entries consumes places
-// p through p+k-1. Remainder units go to tied entries in seat order.
+// p through p+k-1. Remainder units go to tied entries in seat order. It is
+// kept as a fixed-payout test seam; production code uses splitPrizeAmounts.
 func splitPrizes(entries []*entry, payouts []Payout, seatOrder map[string]int) map[*entry]int {
+	return splitPrizeAmounts(entries, fixedPrizeAmounts(payouts), seatOrder)
+}
+
+// fixedPrizeAmounts indexes fixed payouts by place.
+func fixedPrizeAmounts(payouts []Payout) map[int]int {
 	amounts := make(map[int]int, len(payouts))
 	for _, payout := range payouts {
 		amounts[payout.Place] = payout.Amount
 	}
 
+	return amounts
+}
+
+// percentPrizeAmounts converts percentages of the pool into whole prize
+// units. Each place is floored; the leftover units go to the largest
+// fractional remainders, with equal remainders favouring the better place
+// (the lower place number).
+func percentPrizeAmounts(pool int, payouts []PercentPayout) map[int]int {
+	amounts := make(map[int]int, len(payouts))
+	remainders := make(map[int]int, len(payouts))
+	places := make([]int, 0, len(payouts))
+	totalPercent := 0
+	distributed := 0
+
+	for _, payout := range payouts {
+		// Splitting the pool keeps pool*percent within the int range for
+		// realistic prize pools.
+		base := (pool/100)*payout.Percent + (pool%100)*payout.Percent/100
+		amounts[payout.Place] = base
+		remainders[payout.Place] = ((pool % 100) * payout.Percent) % 100
+		places = append(places, payout.Place)
+		totalPercent += payout.Percent
+		distributed += base
+	}
+
+	target := (pool/100)*totalPercent + (pool%100)*totalPercent/100
+	leftover := target - distributed
+
+	sort.SliceStable(places, func(i, j int) bool {
+		if remainders[places[i]] != remainders[places[j]] {
+			return remainders[places[i]] > remainders[places[j]]
+		}
+
+		return places[i] < places[j]
+	})
+
+	if leftover > len(places) {
+		leftover = len(places)
+	}
+
+	for i := 0; i < leftover; i++ {
+		amounts[places[i]]++
+	}
+
+	return amounts
+}
+
+// splitPrizeAmounts groups the entries by place and splits the prize amounts
+// of the places consumed by each group. A group at place p with k entries
+// consumes places p through p+k-1. Remainder units go to tied entries in
+// seat order.
+func splitPrizeAmounts(entries []*entry, amounts map[int]int, seatOrder map[string]int) map[*entry]int {
 	groups := make(map[int][]*entry)
 	for _, e := range entries {
 		groups[e.place] = append(groups[e.place], e)
@@ -595,11 +758,20 @@ func normalizeRules(rules *TournamentRules) (TournamentRules, error) {
 	}
 
 	normalized := TournamentRules{
-		StartingStack: rules.StartingStack,
-		MinPlayers:    rules.MinPlayers,
-		MaxPlayers:    rules.MaxPlayers,
-		Levels:        append([]BlindLevel(nil), rules.Levels...),
-		Payouts:       append([]Payout(nil), rules.Payouts...),
+		StartingStack:  rules.StartingStack,
+		MinPlayers:     rules.MinPlayers,
+		MaxPlayers:     rules.MaxPlayers,
+		Levels:         append([]BlindLevel(nil), rules.Levels...),
+		Payouts:        append([]Payout(nil), rules.Payouts...),
+		BuyIn:          rules.BuyIn,
+		Fee:            rules.Fee,
+		Guarantee:      rules.Guarantee,
+		PayoutMode:     rules.PayoutMode,
+		PercentPayouts: append([]PercentPayout(nil), rules.PercentPayouts...),
+	}
+
+	if normalized.PayoutMode == "" {
+		normalized.PayoutMode = PayoutModeFixed
 	}
 
 	if normalized.MinPlayers == 0 {
@@ -640,45 +812,170 @@ func normalizeRules(rules *TournamentRules) (TournamentRules, error) {
 		}
 	}
 
-	if len(normalized.Payouts) == 0 {
-		return TournamentRules{}, errors.New("at least one payout is required")
+	if normalized.BuyIn < 0 {
+		return TournamentRules{}, fmt.Errorf("buy-in must not be negative, got %d", normalized.BuyIn)
 	}
 
-	sort.Slice(normalized.Payouts, func(i, j int) bool {
-		return normalized.Payouts[i].Place < normalized.Payouts[j].Place
+	if normalized.Fee < 0 {
+		return TournamentRules{}, fmt.Errorf("fee must not be negative, got %d", normalized.Fee)
+	}
+
+	if normalized.Guarantee < 0 {
+		return TournamentRules{}, fmt.Errorf("guarantee must not be negative, got %d", normalized.Guarantee)
+	}
+
+	switch normalized.PayoutMode {
+	case PayoutModeFixed:
+		if len(normalized.PercentPayouts) > 0 {
+			return TournamentRules{}, errors.New("percent payouts are not allowed in fixed payout mode")
+		}
+
+		if err := validateFixedPayouts(&normalized); err != nil {
+			return TournamentRules{}, err
+		}
+	case PayoutModePercent:
+		if len(normalized.Payouts) > 0 {
+			return TournamentRules{}, errors.New("fixed payouts are not allowed in percent payout mode")
+		}
+
+		if err := validatePercentPayouts(&normalized); err != nil {
+			return TournamentRules{}, err
+		}
+
+		if !normalized.accountingEnabled() {
+			return TournamentRules{}, errors.New("percent payouts require a buy-in or a guarantee")
+		}
+	case PayoutModeWinnerTakeAll:
+		if len(normalized.Payouts) > 0 {
+			return TournamentRules{}, errors.New("fixed payouts are not allowed in winner-take-all mode")
+		}
+
+		if len(normalized.PercentPayouts) > 0 {
+			return TournamentRules{}, errors.New("percent payouts are not allowed in winner-take-all mode")
+		}
+
+		if !normalized.accountingEnabled() {
+			return TournamentRules{}, errors.New("winner-take-all mode requires a buy-in or a guarantee")
+		}
+	default:
+		return TournamentRules{}, fmt.Errorf("unknown payout mode %q", normalized.PayoutMode)
+	}
+
+	return normalized, nil
+}
+
+// validateFixedPayouts validates and sorts fixed payouts by place.
+func validateFixedPayouts(rules *TournamentRules) error {
+	if len(rules.Payouts) == 0 {
+		return errors.New("at least one payout is required")
+	}
+
+	sort.Slice(rules.Payouts, func(i, j int) bool {
+		return rules.Payouts[i].Place < rules.Payouts[j].Place
 	})
 
-	seen := make(map[int]bool, len(normalized.Payouts))
+	seen := make(map[int]bool, len(rules.Payouts))
 
-	for i, payout := range normalized.Payouts {
+	for i, payout := range rules.Payouts {
 		if payout.Place <= 0 {
-			return TournamentRules{}, fmt.Errorf("payout place must be positive, got %d", payout.Place)
+			return fmt.Errorf("payout place must be positive, got %d", payout.Place)
 		}
 
 		if payout.Amount <= 0 {
-			return TournamentRules{}, fmt.Errorf("payout amount for place %d must be positive, got %d", payout.Place, payout.Amount)
+			return fmt.Errorf("payout amount for place %d must be positive, got %d", payout.Place, payout.Amount)
 		}
 
 		if seen[payout.Place] {
-			return TournamentRules{}, fmt.Errorf("duplicate payout place %d", payout.Place)
+			return fmt.Errorf("duplicate payout place %d", payout.Place)
 		}
 
 		seen[payout.Place] = true
 
 		if payout.Place != i+1 {
-			return TournamentRules{}, fmt.Errorf("payout places must be contiguous starting at 1, got %d at index %d", payout.Place, i)
+			return fmt.Errorf("payout places must be contiguous starting at 1, got %d at index %d", payout.Place, i)
 		}
 	}
 
-	if len(normalized.Payouts) > normalized.MaxPlayers {
-		return TournamentRules{}, fmt.Errorf(
+	if len(rules.Payouts) > rules.MaxPlayers {
+		return fmt.Errorf(
 			"%d payout places exceed the maximum of %d players",
-			len(normalized.Payouts),
-			normalized.MaxPlayers,
+			len(rules.Payouts),
+			rules.MaxPlayers,
 		)
 	}
 
-	return normalized, nil
+	return nil
+}
+
+// validatePercentPayouts validates and sorts percent payouts by place.
+func validatePercentPayouts(rules *TournamentRules) error {
+	if len(rules.PercentPayouts) == 0 {
+		return errors.New("at least one percent payout is required")
+	}
+
+	sort.Slice(rules.PercentPayouts, func(i, j int) bool {
+		return rules.PercentPayouts[i].Place < rules.PercentPayouts[j].Place
+	})
+
+	seen := make(map[int]bool, len(rules.PercentPayouts))
+	total := 0
+
+	for i, payout := range rules.PercentPayouts {
+		if payout.Place <= 0 {
+			return fmt.Errorf("percent payout place must be positive, got %d", payout.Place)
+		}
+
+		if payout.Percent <= 0 {
+			return fmt.Errorf("percent payout for place %d must be positive, got %d", payout.Place, payout.Percent)
+		}
+
+		if payout.Percent > 100 {
+			return fmt.Errorf("percent payout for place %d must not exceed 100, got %d", payout.Place, payout.Percent)
+		}
+
+		if seen[payout.Place] {
+			return fmt.Errorf("duplicate percent payout place %d", payout.Place)
+		}
+
+		seen[payout.Place] = true
+
+		if payout.Place != i+1 {
+			return fmt.Errorf("percent payout places must be contiguous starting at 1, got %d at index %d", payout.Place, i)
+		}
+
+		total += payout.Percent
+	}
+
+	if total != 100 {
+		return fmt.Errorf("percent payouts must sum to 100, got %d", total)
+	}
+
+	if len(rules.PercentPayouts) > rules.MaxPlayers {
+		return fmt.Errorf(
+			"%d percent payout places exceed the maximum of %d players",
+			len(rules.PercentPayouts),
+			rules.MaxPlayers,
+		)
+	}
+
+	return nil
+}
+
+// payoutPlaces returns the number of places that receive a prize.
+func (r TournamentRules) payoutPlaces() int {
+	switch r.PayoutMode {
+	case PayoutModePercent:
+		return len(r.PercentPayouts)
+	case PayoutModeWinnerTakeAll:
+		return 1
+	default:
+		return len(r.Payouts)
+	}
+}
+
+// accountingEnabled reports whether a buy-in or guarantee funds the pool.
+func (r TournamentRules) accountingEnabled() bool {
+	return r.BuyIn > 0 || r.Guarantee > 0
 }
 
 // rulesForLevel builds table rules for a blind level.
@@ -697,6 +994,7 @@ func rulesForLevel(level BlindLevel) *engine.TableRules {
 func cloneRules(rules TournamentRules) TournamentRules {
 	rules.Levels = append([]BlindLevel(nil), rules.Levels...)
 	rules.Payouts = append([]Payout(nil), rules.Payouts...)
+	rules.PercentPayouts = append([]PercentPayout(nil), rules.PercentPayouts...)
 
 	return rules
 }
