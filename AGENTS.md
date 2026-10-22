@@ -6,13 +6,14 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 
 - The shell exports a stale `GOROOT` (`go1.22.9` while the `go` binary is newer), so plain `go build` fails with "version does not match go tool version". ALWAYS run Go as `env -u GOROOT go ...`. The `Makefile` already handles this via `GO ?= env -u GOROOT go`; CI does not need the workaround because `GOROOT` is unset there.
 - Local checks go through `make`: `make build`, `make vet`, `make fmt`, `make test` (with `-race`), `make test-short`, `make lint` (requires `golangci-lint` locally), and `make check` (`fmt build vet test`).
-- Tests exist for every package (card, deck, hand, player, pot, table, helpers). `-short` skips the exhaustive C(52,5) hand-category enumeration in `src/engine`; the full `-race` run takes ~17s for that package.
+- Tests exist for every package (card, deck, hand, player, pot, table, helpers, tournament). `-short` skips the exhaustive C(52,5) hand-category enumeration in `src/engine`; the full `-race` run takes ~17s for that package.
 - First build needs `go mod download` (fetches gonum); offline environments fail here.
 - CI lives in `.github/workflows/ci.yml` and runs gofmt, build, vet, tests on Go `1.20.x` and `stable`, plus non-blocking `golangci-lint` (config in `.golangci.yml`). Only the first four checks must pass before merge; lint findings are advisory.
 
 ## Layout
 
-- `src/engine` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table` (betting state machine in `betting.go`, side pots in `sidepots.go`, rules in `rules.go`, ante posting and blind position in `antes.go`), `Player`, `Pot`, legacy `Bet`, `IdMaker`.
+- `src/engine` — all domain code: `Card`/`Suit`, `Hand` (ranking + comparisons, single evaluator in `hand_eval.go`), `Deck`, `Table` (betting state machine in `betting.go`, side pots in `sidepots.go`, rules in `rules.go`, ante posting and blind position in `antes.go`, mid-tournament `SetRules` in `rules.go`), `Player`, `Pot`, legacy `Bet`, `IdMaker`.
+- `src/tournament` — single-table freezeout SNG on top of `engine`: blind levels by completed hands, registration/start, places, fixed payouts, standings and winner detection.
 - `src/helpers` — combinations (gonum), random IDs (`crypto/rand`), random ints.
 - Imports use `hands/src/...`, not a VCS path. No root package, no `internal/`.
 - `cmd/` is gitignored (`cmd`, `cmd/*`). `cmd/test/main.go` is an untracked local scratch playground — not an entrypoint, don't put real code there.
@@ -28,8 +29,11 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 - `Action{PlayerID, Type, Amount}`. `Amount` for `bet`/`raise` is the player's total street commitment ("raise to"). There is no explicit all-in action: using the rest of the stack makes the action all-in. `LegalActions` returns the available types; `ToCall` returns the missing amount.
 - `Street`: `preflop`, `flop`, `turn`, `river`, `showdown`. `HandPhase`: `waiting`, `betting`, `street-complete`, `showdown`, `complete`. `NextStreet` only runs in `street-complete`; after the river it moves to `showdown`. If every remaining player is all-in, `NextStreet` runs the board out automatically.
 - `TableRules` (in `rules.go`) has `MinPlayers`, `SmallBlind`, `BigBlind`, `Ante`, `AnteMode`, `MinRaise` (0 → big blind), `MaxRaisesPerStreet` (0 → unlimited; counts all aggressive actions) and `OddChipRule` (`OddChipLeftOfDealer`). `Ante == 0` disables antes. `AnteMode` has `AntePerPlayer` (`"per-player"`, default when empty) and `AnteBigBlind` (`"big-blind"`). Only no-limit Hold'em is implemented.
+- `Table.SetRules` replaces the normalized rules only in `PhaseWaiting` or `PhaseComplete`; it does not touch the current hand or pot. Use it between hands, e.g. when a tournament advances a blind level.
 - Antes (`src/engine/antes.go`): `StartHand` and the deprecated `Blinds()` helper post antes before the blinds. Per-player mode posts from every active player; big-blind mode posts only from the big blind. Antes are dead money: they go into the pot but not into `streetBet`, `currentBet`, `ToCall`, minimum raise or raise-cap calculations. A short stack posts `min(ante, stack)`, becomes all-in, stays active, gets pocket cards, cannot act and can only win pots it is eligible for. `Table.Ante() Chips` returns the configured ante.
 - Side pots: `Showdown` builds layers from total contributions, refunds unmatched chips, excludes folded players, evaluates each layer's eligible players, splits ties and assigns odd chips left of the dealer. `ResolvePots` is the read-only preview; `LastResults` returns the last payouts. `ResolveWinner` is deprecated legacy behavior.
+- Tournament API (`src/tournament`): `NewTournament(name, tag, idMaker, *TournamentRules)`, `Register(name)`, `Start()`, `StartHand()`, `Act`, `NextStreet()`, `Showdown()`, `Standings()`, `State()`, `Level()`, `HandsInLevel()`, `HandsPlayed()`, `Rules()` and read-only `Table()`. `TournamentRules` has `StartingStack`, `MinPlayers` (0 → 2), `MaxPlayers` (0 → 9), `Levels` and `Payouts`. `BlindLevel.Hands` counts completed hands; the last level repeats forever. `Payout.Place` must be contiguous from 1; `Payout.Amount` is an abstract `int` prize unit, not chips.
+- Tournament elimination: a busted player's place is based on the stack at the start of the hand; larger stacks get better places, equal stacks share a place and consume the following places. Payout places consumed by a tie are split evenly, with remainders clockwise from the dealer. Prizes are awarded when the tournament finishes.
 - `Table.Blinds`, `PreFlop`, `Flop`, `Turn`, `River`, and `Player.Check/Call/Raise/Fall` are deprecated low-level helpers that bypass the state machine. `Player.ResetForHand()` activates only players with chips; folded players keep their cards for history.
 - `Table.ResolveWinner()` requires exactly 5 board cards, evaluates only active players, returns ALL tied winner IDs sorted alphabetically, and never panics. `GetFirstPosition`, `GetSecondPosition`, `GetDealer` return `(*Player, error)`. `Table.GetPlayersHand` still requires exactly 7 cards (5 board + 2 pocket).
 - `Player` uses an unexported mutex, returns copies of pocket cards, validates bets and never goes negative. `Pot.Register` registers new players and errors on duplicates; `Pot.Reset` zeroes the total; negative bets are rejected. `Pot.RemoveChips` backs refunds/payouts.
@@ -38,7 +42,8 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 ## Known limitations
 
 - No-limit Hold'em only; fixed-limit and pot-limit are not implemented.
-- No straddles, rebuys, late registration or tournament payout/ICM logic.
+- Tournament support is single-table freezeout SNG only: no MTT, rebuy, re-entry, late registration, bounties, hand-for-hand play or ICM. `Payout.Amount` is an abstract prize unit; buy-in and prize-pool accounting are not implemented.
+- No straddles.
 - Hand history/action log is not persisted; `LastResults` only keeps the latest payouts.
 - `ResolveWinner` remains a deprecated, non-pot-aware convenience.
 - `cmd/` is still gitignored scratch space.
