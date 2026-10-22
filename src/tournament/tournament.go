@@ -1,11 +1,12 @@
-// Package tournament implements a single-table freezeout sit-and-go
-// tournament on top of the engine package.
+// Package tournament implements a single-table sit-and-go tournament on top
+// of the engine package.
 //
-// A tournament runs one engine.Table from 2 to MaxPlayers players. Blinds
-// advance by completed hands, busted players receive a final place and the
-// last remaining player wins. Prize accounting (buy-in, fee, prize pool and
-// payouts) uses abstract integer units, not tournament chips; the engine
-// only moves chips between players.
+// A tournament runs one engine.Table with up to MaxPlayers concurrent seats.
+// Blinds advance by completed hands, busted entries receive a final place and
+// the last remaining player wins. Late registration, re-entry, add-ons, fixed
+// bounties and sit-out are opt-in rules. Prize accounting (buy-in, fee, prize
+// pool and payouts) uses abstract integer units, not tournament chips; the
+// engine only moves chips between players.
 package tournament
 
 import (
@@ -66,11 +67,19 @@ type PercentPayout struct {
 // TournamentRules configures a single-table freezeout tournament.
 //
 // BuyIn and Fee are abstract units per entry; Fee is not part of the prize
-// pool. The prize pool is max(BuyIn*entries, Guarantee). With no BuyIn and no
-// Guarantee, fixed Payouts remain absolute prize units for backward
-// compatibility and the prize pool is zero. PayoutMode selects the payout
-// table; an empty mode means PayoutModeFixed. PercentPayouts is used only in
-// PayoutModePercent.
+// pool. The prize pool is max(BuyIn*entries + AddOnBuyIn*addOns, Guarantee).
+// With no BuyIn, Guarantee or AddOnBuyIn, fixed Payouts remain absolute prize
+// units for backward compatibility and the prize pool is zero. PayoutMode
+// selects the payout table; an empty mode means PayoutModeFixed.
+// PercentPayouts is used only in PayoutModePercent.
+//
+// LateRegUntilLevel is a 1-based, inclusive count of blind levels during
+// which late registration is open; 0 disables late registration.
+// ReentryAllowed enables rebuys/re-entries during that window;
+// MaxReentries caps them per entry chain (0 means unlimited).
+// AddOnAfterLevel is a 1-based level number after which one add-on is
+// available; 0 disables add-ons. Bounty is a fixed bounty per entry that is
+// collected with the entry cost and never funds the prize pool.
 type TournamentRules struct {
 	StartingStack  engine.Chips
 	MinPlayers     int
@@ -82,6 +91,15 @@ type TournamentRules struct {
 	Guarantee      int
 	PayoutMode     PayoutMode
 	PercentPayouts []PercentPayout
+
+	LateRegUntilLevel int
+	ReentryAllowed    bool
+	MaxReentries      int
+	AddOnAfterLevel   int
+	AddOnBuyIn        int
+	AddOnFee          int
+	AddOnChips        engine.Chips
+	Bounty            int
 }
 
 // Standing is a point-in-time view of one tournament entry.
@@ -92,9 +110,12 @@ type Standing struct {
 	Place      int
 	Prize      int
 	Eliminated bool
+	BountyWon  int
+	SittingOut bool
 }
 
-// entry is the tournament-side record of a registered player.
+// entry is the tournament-side record of one registered player. A re-entry
+// keeps the chain root in root and counts its re-entries on that root.
 type entry struct {
 	player     *engine.Player
 	name       string
@@ -103,6 +124,12 @@ type entry struct {
 	prize      int
 	eliminated bool
 	startStack engine.Chips
+
+	root       *entry
+	reentries  int
+	addOnTaken bool
+	bountyWon  int
+	sittingOut bool
 }
 
 // Tournament runs a single-table freezeout sit-and-go.
@@ -119,6 +146,10 @@ type Tournament struct {
 	level        int
 	handsInLevel int
 	handsPlayed  int
+
+	addOns          int
+	bountiesPaid    int
+	unclaimedBounty int
 
 	mu sync.RWMutex
 }
@@ -149,9 +180,9 @@ func (t *Tournament) Rules() TournamentRules {
 }
 
 // PrizePool returns the current prize pool in abstract prize units. It is
-// max(BuyIn * registered entries, Guarantee). In legacy fixed-payout mode
-// without a BuyIn or Guarantee the pool is zero. A zero pool can also mean a
-// funded tournament with no entries yet.
+// max(BuyIn * entries + AddOnBuyIn * add-ons, Guarantee). In legacy
+// fixed-payout mode without a BuyIn, Guarantee or add-on the pool is zero. A
+// zero pool can also mean a funded tournament with no entries yet.
 func (t *Tournament) PrizePool() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -159,26 +190,52 @@ func (t *Tournament) PrizePool() int {
 	return t.prizePoolLocked()
 }
 
-// EntryCost returns BuyIn plus Fee for one entry.
+// EntryCost returns BuyIn plus Fee plus Bounty for one entry.
 func (t *Tournament) EntryCost() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	return t.rules.BuyIn + t.rules.Fee
+	return t.rules.BuyIn + t.rules.Fee + t.rules.Bounty
 }
 
-// FeesCollected returns the total fees for all registered entries. Fees are
+// AddOnCost returns AddOnBuyIn plus AddOnFee for one add-on.
+func (t *Tournament) AddOnCost() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.rules.AddOnBuyIn + t.rules.AddOnFee
+}
+
+// FeesCollected returns the total fees for all entries and add-ons. Fees are
 // not part of the prize pool.
 func (t *Tournament) FeesCollected() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	return t.rules.Fee * len(t.entries)
+	return t.rules.Fee*len(t.entries) + t.rules.AddOnFee*t.addOns
+}
+
+// BountyPool returns the total bounty units collected with the entries.
+// Bounties are not part of the prize pool.
+func (t *Tournament) BountyPool() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.rules.Bounty * len(t.entries)
+}
+
+// BountiesPaid returns the bounty units already awarded, including the
+// winner's own bounty when the tournament finishes.
+func (t *Tournament) BountiesPaid() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.bountiesPaid
 }
 
 // prizePoolLocked computes the prize pool. Requires at least a read lock.
 func (t *Tournament) prizePoolLocked() int {
-	pool := t.rules.BuyIn * len(t.entries)
+	pool := t.rules.BuyIn*len(t.entries) + t.rules.AddOnBuyIn*t.addOns
 	if t.rules.Guarantee > pool {
 		pool = t.rules.Guarantee
 	}
@@ -187,25 +244,37 @@ func (t *Tournament) prizePoolLocked() int {
 }
 
 // Register creates a player with the starting stack and adds them to the
-// tournament. Registration is only possible in StateRegistering.
+// tournament. During registration it enforces MaxPlayers. While the
+// tournament runs, registration is only possible during the late
+// registration window and only when the table has a free or busted seat.
 func (t *Tournament) Register(name string) (*engine.Player, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.state != StateRegistering {
+	switch t.state {
+	case StateRegistering:
+		return t.registerLocked(name)
+	case StateRunning:
+		if !t.lateRegOpenLocked() {
+			return nil, fmt.Errorf("cannot register in state %s: late registration is closed", t.state)
+		}
+
+		return t.lateRegisterLocked(name)
+	default:
 		return nil, fmt.Errorf("cannot register in state %s", t.state)
 	}
+}
 
+// registerLocked adds a player during the registration phase. Requires the
+// write lock.
+func (t *Tournament) registerLocked(name string) (*engine.Player, error) {
 	if len(t.entries) >= t.rules.MaxPlayers {
 		return nil, fmt.Errorf("player limit %d reached", t.rules.MaxPlayers)
 	}
 
-	player := engine.NewPlayer(name, t.idMaker, t.rules.StartingStack)
-
-	for _, e := range t.entries {
-		if e.player.ID == player.ID {
-			return nil, fmt.Errorf("player with ID %s is already registered", player.ID)
-		}
+	player, err := t.newUniquePlayerLocked(name)
+	if err != nil {
+		return nil, err
 	}
 
 	t.entries = append(t.entries, &entry{
@@ -215,6 +284,285 @@ func (t *Tournament) Register(name string) (*engine.Player, error) {
 	})
 
 	return player, nil
+}
+
+// lateRegisterLocked seats a late registrant between hands. Requires the
+// write lock.
+func (t *Tournament) lateRegisterLocked(name string) (*engine.Player, error) {
+	if t.table == nil {
+		return nil, errors.New("tournament table is not initialized")
+	}
+
+	player, err := t.newUniquePlayerLocked(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.table.SeatPlayer(player); err != nil {
+		return nil, fmt.Errorf("seat late registrant %s: %w", player.ID, err)
+	}
+
+	t.shiftEliminatedPlacesLocked()
+
+	t.entries = append(t.entries, &entry{
+		player: player,
+		name:   name,
+		order:  len(t.entries),
+	})
+
+	return player, nil
+}
+
+// newUniquePlayerLocked creates an engine player whose ID is not used by an
+// existing entry. Requires at least a read lock.
+func (t *Tournament) newUniquePlayerLocked(name string) (*engine.Player, error) {
+	player := engine.NewPlayer(name, t.idMaker, t.rules.StartingStack)
+
+	if t.entryByPlayerIDLocked(player.ID) != nil {
+		return nil, fmt.Errorf("player with ID %s is already registered", player.ID)
+	}
+
+	return player, nil
+}
+
+// Reenter adds a new entry for a busted player. A rebuy and a re-entry are
+// the same operation: the new player receives a fresh starting stack, keeps
+// the display name of the previous entry and joins the original entry's
+// re-entry chain. It is only possible during the late registration window
+// when ReentryAllowed is set.
+func (t *Tournament) Reenter(previousPlayerID string) (*engine.Player, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.state != StateRunning {
+		return nil, fmt.Errorf("cannot re-enter in state %s", t.state)
+	}
+
+	if !t.lateRegOpenLocked() {
+		return nil, fmt.Errorf("cannot re-enter in state %s: late registration is closed", t.state)
+	}
+
+	if !t.rules.ReentryAllowed {
+		return nil, errors.New("re-entry is not allowed")
+	}
+
+	if t.table == nil {
+		return nil, errors.New("tournament table is not initialized")
+	}
+
+	prev := t.entryByPlayerIDLocked(previousPlayerID)
+	if prev == nil {
+		return nil, fmt.Errorf("player with ID %s is not registered", previousPlayerID)
+	}
+
+	if !prev.eliminated {
+		return nil, fmt.Errorf("player with ID %s is still in the tournament", previousPlayerID)
+	}
+
+	root := prev.root
+	if root == nil {
+		root = prev
+	}
+
+	if t.chainHasActiveLocked(root) {
+		return nil, fmt.Errorf("player %s already has an active entry", root.name)
+	}
+
+	if t.rules.MaxReentries > 0 && root.reentries >= t.rules.MaxReentries {
+		return nil, fmt.Errorf("re-entry limit %d reached for %s", t.rules.MaxReentries, root.name)
+	}
+
+	player, err := t.newUniquePlayerLocked(prev.name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.table.ReplacePlayer(previousPlayerID, player); err != nil {
+		if seatErr := t.table.SeatPlayer(player); seatErr != nil {
+			return nil, fmt.Errorf("re-enter player %s: %w", previousPlayerID, seatErr)
+		}
+	}
+
+	root.reentries++
+
+	t.shiftEliminatedPlacesLocked()
+
+	t.entries = append(t.entries, &entry{
+		player: player,
+		name:   prev.name,
+		order:  len(t.entries),
+		root:   root,
+	})
+
+	return player, nil
+}
+
+// AddOn adds one add-on stack to a live entry. The window is open between
+// the completion of level AddOnAfterLevel and the first hand of the next
+// level, while the table is between hands. Each entry may take one add-on.
+func (t *Tournament) AddOn(playerID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.state != StateRunning {
+		return fmt.Errorf("cannot take an add-on in state %s", t.state)
+	}
+
+	if !t.addOnWindowOpenLocked() {
+		return errors.New("the add-on window is closed")
+	}
+
+	if t.table == nil {
+		return errors.New("tournament table is not initialized")
+	}
+
+	e := t.entryByPlayerIDLocked(playerID)
+	if e == nil {
+		return fmt.Errorf("player with ID %s is not registered", playerID)
+	}
+
+	if e.eliminated {
+		return fmt.Errorf("player with ID %s has been eliminated", playerID)
+	}
+
+	if e.addOnTaken {
+		return fmt.Errorf("player with ID %s has already taken an add-on", playerID)
+	}
+
+	if err := t.table.AddChips(playerID, t.rules.AddOnChips); err != nil {
+		return err
+	}
+
+	e.addOnTaken = true
+	t.addOns++
+
+	return nil
+}
+
+// SitOut marks a live entry as sitting out between hands. The player keeps
+// their chips but is not dealt into the next hands.
+func (t *Tournament) SitOut(playerID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	e, err := t.liveEntryLocked("sit out", playerID)
+	if err != nil {
+		return err
+	}
+
+	if err := t.table.SitOut(playerID); err != nil {
+		return err
+	}
+
+	e.sittingOut = true
+
+	return nil
+}
+
+// SitIn clears a live entry's sit-out status between hands.
+func (t *Tournament) SitIn(playerID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	e, err := t.liveEntryLocked("sit in", playerID)
+	if err != nil {
+		return err
+	}
+
+	if err := t.table.SitIn(playerID); err != nil {
+		return err
+	}
+
+	e.sittingOut = false
+
+	return nil
+}
+
+// liveEntryLocked returns the entry of a live player in a running
+// tournament. Requires the write lock.
+func (t *Tournament) liveEntryLocked(operation, playerID string) (*entry, error) {
+	if t.state != StateRunning {
+		return nil, fmt.Errorf("cannot %s in state %s", operation, t.state)
+	}
+
+	if t.table == nil {
+		return nil, errors.New("tournament table is not initialized")
+	}
+
+	e := t.entryByPlayerIDLocked(playerID)
+	if e == nil {
+		return nil, fmt.Errorf("player with ID %s is not registered", playerID)
+	}
+
+	if e.eliminated {
+		return nil, fmt.Errorf("player with ID %s has been eliminated", playerID)
+	}
+
+	return e, nil
+}
+
+// entryByPlayerIDLocked returns the entry with the given player ID, or nil.
+// Requires at least a read lock.
+func (t *Tournament) entryByPlayerIDLocked(playerID string) *entry {
+	for _, e := range t.entries {
+		if e.player.ID == playerID {
+			return e
+		}
+	}
+
+	return nil
+}
+
+// chainHasActiveLocked reports whether the re-entry chain rooted at root has
+// a live entry, including root itself. A player must bust the current entry
+// before buying another re-entry. Requires at least a read lock.
+func (t *Tournament) chainHasActiveLocked(root *entry) bool {
+	if root == nil {
+		return false
+	}
+
+	if !root.eliminated {
+		return true
+	}
+
+	for _, e := range t.entries {
+		if e != root && e.root == root && !e.eliminated {
+			return true
+		}
+	}
+
+	return false
+}
+
+// lateRegOpenLocked reports whether new entries are accepted. Late
+// registration covers the first LateRegUntilLevel blind levels. Requires at
+// least a read lock.
+func (t *Tournament) lateRegOpenLocked() bool {
+	return t.state == StateRunning &&
+		t.rules.LateRegUntilLevel > 0 &&
+		t.level < t.rules.LateRegUntilLevel
+}
+
+// addOnWindowOpenLocked reports whether the add-on window is open. Requires
+// at least a read lock.
+func (t *Tournament) addOnWindowOpenLocked() bool {
+	return t.state == StateRunning &&
+		t.rules.AddOnAfterLevel > 0 &&
+		t.level == t.rules.AddOnAfterLevel &&
+		t.handsInLevel == 0 &&
+		t.table != nil &&
+		t.table.Phase() == engine.PhaseComplete
+}
+
+// shiftEliminatedPlacesLocked moves every eliminated entry one place down
+// after the field grows, so final places stay consistent with the larger
+// field. Requires the write lock.
+func (t *Tournament) shiftEliminatedPlacesLocked() {
+	for _, e := range t.entries {
+		if e.eliminated {
+			e.place++
+		}
+	}
 }
 
 // Start builds the engine table and moves the tournament to StateRunning.
@@ -401,6 +749,8 @@ func (t *Tournament) Showdown() ([]engine.PotResult, error) {
 
 	assignBustedPlaces(busted, remainingBefore)
 
+	t.payBountiesLocked(busted, results)
+
 	remaining := 0
 
 	var survivor *entry
@@ -417,6 +767,7 @@ func (t *Tournament) Showdown() ([]engine.PotResult, error) {
 		return nil, errors.New("all players have been eliminated")
 	case 1:
 		survivor.place = 1
+		t.awardSurvivorBountyLocked(survivor)
 		t.state = StateFinished
 		t.awardPrizesLocked()
 	default:
@@ -448,6 +799,8 @@ func (t *Tournament) Standings() []Standing {
 			Place:      e.place,
 			Prize:      e.prize,
 			Eliminated: e.eliminated,
+			BountyWon:  e.bountyWon,
+			SittingOut: e.sittingOut,
 		})
 	}
 
@@ -605,6 +958,128 @@ func assignBustedPlaces(busted []*entry, remainingBefore int) {
 		nextPlace += j - i
 		i = j
 	}
+}
+
+// payBountiesLocked pays the fixed bounty for every entry busted in the
+// current hand. Requires the write lock.
+func (t *Tournament) payBountiesLocked(busted []*entry, results []engine.PotResult) {
+	if t.rules.Bounty <= 0 {
+		return
+	}
+
+	seatOrder := buildSeatOrder(t.table)
+
+	for _, e := range busted {
+		layer, ok := bountyLayer(results, e.player.ID)
+		if !ok || len(layer.Winners) == 0 {
+			t.unclaimedBounty += t.rules.Bounty
+
+			continue
+		}
+
+		shares := splitBounty(t.rules.Bounty, layer.Winners, seatOrder)
+
+		for id, share := range shares {
+			if winner := t.entryByPlayerIDLocked(id); winner != nil {
+				winner.bountyWon += share
+			}
+		}
+
+		t.bountiesPaid += t.rules.Bounty
+	}
+}
+
+// awardSurvivorBountyLocked awards the winner's own bounty plus any
+// unclaimed bounties when the tournament finishes. Requires the write lock.
+func (t *Tournament) awardSurvivorBountyLocked(survivor *entry) {
+	total := t.rules.Bounty + t.unclaimedBounty
+	if total == 0 {
+		t.unclaimedBounty = 0
+
+		return
+	}
+
+	survivor.bountyWon += total
+	t.bountiesPaid += total
+	t.unclaimedBounty = 0
+}
+
+// bountyLayer returns the non-refunded pot layer with the largest amount
+// that lists the player as eligible.
+func bountyLayer(results []engine.PotResult, playerID string) (engine.PotResult, bool) {
+	var (
+		best  engine.PotResult
+		found bool
+	)
+
+	for _, result := range results {
+		if result.Refunded {
+			continue
+		}
+
+		if !stringInSlice(result.Eligible, playerID) {
+			continue
+		}
+
+		if !found || result.Amount > best.Amount {
+			best = result
+			found = true
+		}
+	}
+
+	return best, found
+}
+
+// splitBounty splits amount evenly among winners. The remainder goes to
+// winners clockwise from the dealer; winners missing from the seat map are
+// ordered by player ID after the seated winners.
+func splitBounty(amount int, winners []string, seatOrder map[string]int) map[string]int {
+	shares := make(map[string]int, len(winners))
+	if len(winners) == 0 {
+		return shares
+	}
+
+	base := amount / len(winners)
+	remainder := amount % len(winners)
+
+	for _, id := range winners {
+		shares[id] = base
+	}
+
+	ordered := append([]string(nil), winners...)
+
+	sort.SliceStable(ordered, func(i, j int) bool {
+		pi, oki := seatOrder[ordered[i]]
+		pj, okj := seatOrder[ordered[j]]
+
+		switch {
+		case oki && okj:
+			if pi != pj {
+				return pi < pj
+			}
+		case oki != okj:
+			return oki
+		}
+
+		return ordered[i] < ordered[j]
+	})
+
+	for i := 0; i < remainder && i < len(ordered); i++ {
+		shares[ordered[i]]++
+	}
+
+	return shares
+}
+
+// stringInSlice reports whether values contains value.
+func stringInSlice(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+
+	return false
 }
 
 // splitPrizes groups the entries by place and splits the payout places
@@ -768,6 +1243,15 @@ func normalizeRules(rules *TournamentRules) (TournamentRules, error) {
 		Guarantee:      rules.Guarantee,
 		PayoutMode:     rules.PayoutMode,
 		PercentPayouts: append([]PercentPayout(nil), rules.PercentPayouts...),
+
+		LateRegUntilLevel: rules.LateRegUntilLevel,
+		ReentryAllowed:    rules.ReentryAllowed,
+		MaxReentries:      rules.MaxReentries,
+		AddOnAfterLevel:   rules.AddOnAfterLevel,
+		AddOnBuyIn:        rules.AddOnBuyIn,
+		AddOnFee:          rules.AddOnFee,
+		AddOnChips:        rules.AddOnChips,
+		Bounty:            rules.Bounty,
 	}
 
 	if normalized.PayoutMode == "" {
@@ -822,6 +1306,58 @@ func normalizeRules(rules *TournamentRules) (TournamentRules, error) {
 
 	if normalized.Guarantee < 0 {
 		return TournamentRules{}, fmt.Errorf("guarantee must not be negative, got %d", normalized.Guarantee)
+	}
+
+	if normalized.LateRegUntilLevel < 0 || normalized.LateRegUntilLevel > len(normalized.Levels) {
+		return TournamentRules{}, fmt.Errorf(
+			"late registration level must be between 0 and %d, got %d",
+			len(normalized.Levels),
+			normalized.LateRegUntilLevel,
+		)
+	}
+
+	if normalized.MaxReentries < 0 {
+		return TournamentRules{}, fmt.Errorf("max re-entries must not be negative, got %d", normalized.MaxReentries)
+	}
+
+	if !normalized.ReentryAllowed && normalized.MaxReentries != 0 {
+		return TournamentRules{}, errors.New("max re-entries requires re-entry to be allowed")
+	}
+
+	if normalized.ReentryAllowed && normalized.LateRegUntilLevel <= 0 {
+		return TournamentRules{}, errors.New("re-entry requires an open late registration window")
+	}
+
+	if normalized.AddOnAfterLevel < 0 {
+		return TournamentRules{}, fmt.Errorf("add-on level must not be negative, got %d", normalized.AddOnAfterLevel)
+	}
+
+	if normalized.AddOnAfterLevel > 0 {
+		if normalized.AddOnAfterLevel >= len(normalized.Levels) {
+			return TournamentRules{}, fmt.Errorf(
+				"add-on level %d must be below the level count %d",
+				normalized.AddOnAfterLevel,
+				len(normalized.Levels),
+			)
+		}
+
+		if normalized.AddOnBuyIn <= 0 {
+			return TournamentRules{}, fmt.Errorf("add-on buy-in must be positive, got %d", normalized.AddOnBuyIn)
+		}
+
+		if normalized.AddOnFee < 0 {
+			return TournamentRules{}, fmt.Errorf("add-on fee must not be negative, got %d", normalized.AddOnFee)
+		}
+
+		if normalized.AddOnChips <= 0 {
+			return TournamentRules{}, fmt.Errorf("add-on chips must be positive, got %d", normalized.AddOnChips)
+		}
+	} else if normalized.AddOnBuyIn != 0 || normalized.AddOnFee != 0 || normalized.AddOnChips != 0 {
+		return TournamentRules{}, errors.New("add-on pricing requires an add-on level")
+	}
+
+	if normalized.Bounty < 0 {
+		return TournamentRules{}, fmt.Errorf("bounty must not be negative, got %d", normalized.Bounty)
 	}
 
 	switch normalized.PayoutMode {
@@ -973,9 +1509,10 @@ func (r TournamentRules) payoutPlaces() int {
 	}
 }
 
-// accountingEnabled reports whether a buy-in or guarantee funds the pool.
+// accountingEnabled reports whether a buy-in, add-on buy-in or guarantee
+// funds the pool.
 func (r TournamentRules) accountingEnabled() bool {
-	return r.BuyIn > 0 || r.Guarantee > 0
+	return r.BuyIn > 0 || r.Guarantee > 0 || r.AddOnBuyIn > 0
 }
 
 // rulesForLevel builds table rules for a blind level.
