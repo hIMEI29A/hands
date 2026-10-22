@@ -57,4 +57,4 @@ Texas Hold'em poker **library** (no app or binary). Module `hands`, `go 1.20` (n
 `dev` is the integration branch, `master` is release-only. This overrides the global "branch from `origin/master`" default:
 - Branch from `origin/dev` and PR into `dev`; back-merge `master` into `dev` when needed.
 - Release: PR `dev` → `master`, tag `vX.Y.Z-alpha` on the merge commit, and bump `README.md` "Current version" in that same PR.
-- The current released tag is `v0.7.0-alpha`. Bump `README.md` "Current version" in the release PR.
+- The current released tag is `v0.8.0-alpha`. Bump `README.md` "Current version" in the release PR.
