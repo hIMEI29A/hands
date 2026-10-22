@@ -1,4 +1,4 @@
-package models
+package engine
 
 import "fmt"
 
@@ -131,6 +131,31 @@ func (r *TableRules) Validate() error {
 	default:
 		return fmt.Errorf("unknown odd chip rule %q", r.OddChipRule)
 	}
+
+	return nil
+}
+
+// SetRules replaces the table rules. It is allowed only between hands,
+// in PhaseWaiting or PhaseComplete. The rules are normalized and validated
+// before they are applied; the current hand and pot are untouched.
+func (t *Table) SetRules(rules *TableRules) error {
+	if rules == nil {
+		return fmt.Errorf("set rules: table rules are nil")
+	}
+
+	normalized := rules.normalized()
+	if err := normalized.Validate(); err != nil {
+		return fmt.Errorf("invalid table rules: %w", err)
+	}
+
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	if t.phase != PhaseWaiting && t.phase != PhaseComplete {
+		return fmt.Errorf("cannot set rules in phase %s", t.phase)
+	}
+
+	t.rules = *normalized
 
 	return nil
 }
