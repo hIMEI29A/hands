@@ -6,7 +6,7 @@ Texas Hold'em poker game library for Go.
 
 ## Current version
 
-v0.6.0-alpha
+v0.7.0-alpha
 
 ## Usage
 
@@ -133,9 +133,9 @@ of the current API.
 ## Tournament SNG
 
 `src/tournament` adds a single-table freezeout sit-and-go on top of `Table`.
-Blind levels advance by **completed hands**, not wall-clock time. A fixed
-`Payout` table awards abstract prize units; prizes are not tournament chips.
-With `hands/src/engine` and `hands/src/tournament` imported:
+Blind levels advance by **completed hands**, not wall-clock time. Prizes are
+abstract units, not tournament chips. With `hands/src/engine` and
+`hands/src/tournament` imported:
 
 ```go
 rules := &tournament.TournamentRules{
@@ -212,15 +212,61 @@ for _, standing := range tour.Standings() {
 
 `BlindLevel.Hands` counts completed hands; a hand that starts on a level
 finishes on that level. The last level repeats indefinitely. Payout places
-must be contiguous starting at 1. A player eliminated with a larger
-start-of-hand stack receives the better place; equal stacks share a place and
-split the payout places they consume, with any remainder going clockwise from
-the dealer. `Tournament.Table()` exposes the underlying table for read-only
-inspection; use `Act`, `NextStreet` and `Showdown` to mutate tournament play.
+must be contiguous starting at 1, fit within `MaxPlayers`, and must not exceed
+the number of entries. A player eliminated with a larger start-of-hand stack
+receives the better place; equal stacks share a place and split the payout
+places they consume, with any remainder going clockwise from the dealer.
+`Tournament.Table()` exposes the underlying table for read-only inspection;
+use `Act`, `NextStreet` and `Showdown` to mutate tournament play.
 
-Only single-table freezeout SNGs are implemented: no MTT, rebuy, re-entry,
-late registration, bounties, hand-for-hand play or ICM. `Payout.Amount` is an
-abstract `int` prize unit; buy-in and prize-pool accounting are out of scope.
+### Buy-ins and prize pools
+
+`BuyIn` is an abstract prize unit per entry and `Guarantee` is a minimum
+pool. `Fee` is charged per entry but is not part of the pool:
+`PrizePool()` returns `max(BuyIn * registered entries, Guarantee)`, so it
+grows during registration. `EntryCost()` returns `BuyIn + Fee` and
+`FeesCollected()` returns the total fees for registered entries. Three payout
+modes are available:
+
+- `PayoutModeFixed` (the default when `PayoutMode` is empty) pays the
+  absolute `Payouts` table. Without a `BuyIn` or `Guarantee` it keeps the
+  legacy behavior: payouts are abstract units and the prize pool is zero.
+  With accounting enabled, `Start` rejects a payout total above the pool;
+  a total below the pool leaves the remainder unawarded.
+- `PayoutModePercent` pays `PercentPayouts`, whole percentages summing to 100.
+- `PayoutModeWinnerTakeAll` pays the whole pool to first place.
+
+Only the payout table for the selected mode may be set. `PayoutModePercent`
+and `PayoutModeWinnerTakeAll` also require a positive `BuyIn` or `Guarantee`.
+
+Percent prizes use integer arithmetic: every place is floored and the leftover
+units go to the largest fractional remainders, with equal remainders favouring
+the better place (the lower place number). A small pool may leave a place at
+zero.
+
+```go
+rules := &tournament.TournamentRules{
+	StartingStack:  1000,
+	BuyIn:          100,
+	Fee:            10,
+	Guarantee:      500,
+	Levels: []tournament.BlindLevel{
+		{SmallBlind: 10, BigBlind: 20, Hands: 10},
+	},
+	PayoutMode:     tournament.PayoutModePercent,
+	PercentPayouts: []tournament.PercentPayout{
+		{Place: 1, Percent: 50},
+		{Place: 2, Percent: 30},
+		{Place: 3, Percent: 20},
+	},
+}
+// PrizePool() is max(100 * entries, 500); the fee is not included.
+```
+
+Only single-table freezeout SNGs are implemented: buy-in, fee, guarantee and
+prize-pool accounting are supported, but there is no MTT, rebuy, re-entry,
+late registration, bounties, hand-for-hand play or ICM. `Payout.Amount` and
+`PrizePool()` are abstract `int` prize units, not tournament chips.
 
 ## Development
 

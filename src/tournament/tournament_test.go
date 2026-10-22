@@ -18,6 +18,21 @@ func validRules() *TournamentRules {
 	}
 }
 
+func percentRules() *TournamentRules {
+	return &TournamentRules{
+		StartingStack: 100,
+		BuyIn:         100,
+		Levels: []BlindLevel{
+			{SmallBlind: 1, BigBlind: 2, Hands: 2},
+		},
+		PayoutMode: PayoutModePercent,
+		PercentPayouts: []PercentPayout{
+			{Place: 1, Percent: 60},
+			{Place: 2, Percent: 40},
+		},
+	}
+}
+
 func mustNewTournament(t *testing.T, rules *TournamentRules) *Tournament {
 	t.Helper()
 
@@ -291,6 +306,163 @@ func TestNewTournamentRejectsInvalidRules(t *testing.T) {
 					{Place: 2, Amount: 5},
 					{Place: 3, Amount: 1},
 				}
+				return r
+			},
+		},
+		{
+			name: "negative buy-in",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = -1
+				return r
+			},
+		},
+		{
+			name: "negative fee",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Fee = -1
+				return r
+			},
+		},
+		{
+			name: "negative guarantee",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Guarantee = -1
+				return r
+			},
+		},
+		{
+			name: "unknown payout mode",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.PayoutMode = PayoutMode("bogus")
+				return r
+			},
+		},
+		{
+			name: "fixed mode with percent payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.PercentPayouts = []PercentPayout{{Place: 1, Percent: 100}}
+				return r
+			},
+		},
+		{
+			name: "percent mode without percent payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Payouts = nil
+				r.PayoutMode = PayoutModePercent
+				r.BuyIn = 100
+				return r
+			},
+		},
+		{
+			name: "percent mode with fixed payouts",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.Payouts = []Payout{{Place: 1, Amount: 10}}
+				return r
+			},
+		},
+		{
+			name: "percent payout zero",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts[0].Percent = 0
+				return r
+			},
+		},
+		{
+			name: "percent payout above 100",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{{Place: 1, Percent: 101}}
+				return r
+			},
+		},
+		{
+			name: "percent payouts do not sum to 100",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 2, Percent: 40},
+				}
+				return r
+			},
+		},
+		{
+			name: "percent payouts non-contiguous",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 3, Percent: 50},
+				}
+				return r
+			},
+		},
+		{
+			name: "percent payouts duplicate places",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 1, Percent: 50},
+				}
+				return r
+			},
+		},
+		{
+			name: "percent payout places exceed max players",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.MaxPlayers = 2
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 2, Percent: 30},
+					{Place: 3, Percent: 20},
+				}
+				return r
+			},
+		},
+		{
+			name: "percent mode without accounting",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.BuyIn = 0
+				return r
+			},
+		},
+		{
+			name: "winner-take-all with fixed payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.PayoutMode = PayoutModeWinnerTakeAll
+				r.BuyIn = 100
+				return r
+			},
+		},
+		{
+			name: "winner-take-all with percent payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Payouts = nil
+				r.PayoutMode = PayoutModeWinnerTakeAll
+				r.BuyIn = 100
+				r.PercentPayouts = []PercentPayout{{Place: 1, Percent: 100}}
+				return r
+			},
+		},
+		{
+			name: "winner-take-all without accounting",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Payouts = nil
+				r.PayoutMode = PayoutModeWinnerTakeAll
 				return r
 			},
 		},
@@ -769,6 +941,73 @@ func TestFullTournament(t *testing.T) {
 	}
 }
 
+func TestFullTournamentPercentPayouts(t *testing.T) {
+	const (
+		startingStack = engine.Chips(10)
+		playerCount   = 3
+		buyIn         = 10
+		wantPool      = buyIn * playerCount
+	)
+
+	rules := &TournamentRules{
+		StartingStack: startingStack,
+		BuyIn:         buyIn,
+		Levels: []BlindLevel{
+			{SmallBlind: 1, BigBlind: 2, Hands: 3},
+			{SmallBlind: 2, BigBlind: 4, Hands: 3},
+			{SmallBlind: 5, BigBlind: 10, Hands: 3},
+		},
+		PayoutMode: PayoutModePercent,
+		PercentPayouts: []PercentPayout{
+			{Place: 1, Percent: 50},
+			{Place: 2, Percent: 30},
+			{Place: 3, Percent: 20},
+		},
+	}
+
+	tour := mustNewTournament(t, rules)
+	registerPlayers(t, tour, "alice", "bob", "carol")
+
+	if err := tour.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if got := tour.PrizePool(); got != wantPool {
+		t.Fatalf("PrizePool() = %d, want %d", got, wantPool)
+	}
+
+	for hands := 0; hands < 100 && tour.State() == StateRunning; hands++ {
+		if err := tour.StartHand(); err != nil {
+			t.Fatalf("StartHand on hand %d: %v", hands+1, err)
+		}
+
+		checkCallToShowdown(t, tour)
+
+		if _, err := tour.Showdown(); err != nil {
+			t.Fatalf("Showdown on hand %d: %v", hands+1, err)
+		}
+	}
+
+	if tour.State() != StateFinished {
+		t.Fatalf("State = %s, want %s", tour.State(), StateFinished)
+	}
+
+	standings := tour.Standings()
+	prizeSum := 0
+
+	for _, standing := range standings {
+		prizeSum += standing.Prize
+	}
+
+	if prizeSum != wantPool {
+		t.Fatalf("total prizes = %d, want %d", prizeSum, wantPool)
+	}
+
+	if standings[0].Place != 1 || standings[0].Prize != wantPool/2 {
+		t.Fatalf("winner standing = %+v, want place 1 and prize %d", standings[0], wantPool/2)
+	}
+}
+
 func TestStandingsOrderBeforeFinish(t *testing.T) {
 	rules := validRules()
 	rules.MinPlayers = 3
@@ -941,5 +1180,539 @@ func TestStateString(t *testing.T) {
 
 	if string(StateFinished) != "finished" {
 		t.Fatal("StateFinished has an unexpected value")
+	}
+}
+
+func TestPayoutModeDefaultsToFixed(t *testing.T) {
+	tour := mustNewTournament(t, validRules())
+
+	if got := tour.Rules().PayoutMode; got != PayoutModeFixed {
+		t.Fatalf("PayoutMode = %q, want %q", got, PayoutModeFixed)
+	}
+}
+
+func TestPrizePoolTracksRegistrations(t *testing.T) {
+	rules := validRules()
+	rules.BuyIn = 100
+	rules.Fee = 10
+
+	tour := mustNewTournament(t, rules)
+
+	if got := tour.PrizePool(); got != 0 {
+		t.Fatalf("PrizePool() = %d before registration, want 0", got)
+	}
+
+	registerPlayers(t, tour, "alice")
+
+	if got := tour.PrizePool(); got != 100 {
+		t.Fatalf("PrizePool() = %d after one entry, want 100", got)
+	}
+
+	registerPlayers(t, tour, "bob", "carol")
+
+	if got := tour.PrizePool(); got != 300 {
+		t.Fatalf("PrizePool() = %d after three entries, want 300", got)
+	}
+}
+
+func TestEntryCostAndFeesCollected(t *testing.T) {
+	rules := validRules()
+	rules.BuyIn = 100
+	rules.Fee = 10
+
+	tour := mustNewTournament(t, rules)
+
+	if got := tour.EntryCost(); got != 110 {
+		t.Fatalf("EntryCost() = %d, want 110", got)
+	}
+
+	if got := tour.FeesCollected(); got != 0 {
+		t.Fatalf("FeesCollected() = %d before registration, want 0", got)
+	}
+
+	registerPlayers(t, tour, "alice", "bob", "carol")
+
+	if got := tour.FeesCollected(); got != 30 {
+		t.Fatalf("FeesCollected() = %d after three entries, want 30", got)
+	}
+
+	if got := tour.PrizePool(); got != 300 {
+		t.Fatalf("PrizePool() = %d after three entries, want 300", got)
+	}
+}
+
+func TestPrizePool(t *testing.T) {
+	tests := []struct {
+		name      string
+		buyIn     int
+		fee       int
+		guarantee int
+		entries   int
+		want      int
+	}{
+		{
+			name:    "buy-in per entry ignores the fee",
+			buyIn:   100,
+			fee:     10,
+			entries: 3,
+			want:    300,
+		},
+		{
+			name:      "guarantee overrides a smaller pool",
+			buyIn:     100,
+			guarantee: 500,
+			entries:   2,
+			want:      500,
+		},
+		{
+			name:      "guarantee without a buy-in",
+			guarantee: 500,
+			entries:   3,
+			want:      500,
+		},
+		{
+			name:      "guarantee before registration",
+			guarantee: 500,
+			entries:   0,
+			want:      500,
+		},
+		{
+			name:      "buy-in beats a smaller guarantee",
+			buyIn:     100,
+			guarantee: 50,
+			entries:   2,
+			want:      200,
+		},
+		{
+			name:    "legacy fixed mode has no pool",
+			entries: 3,
+			want:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tour := &Tournament{
+				rules: TournamentRules{
+					BuyIn:     tt.buyIn,
+					Fee:       tt.fee,
+					Guarantee: tt.guarantee,
+				},
+				entries: make([]*entry, tt.entries),
+			}
+
+			if got := tour.PrizePool(); got != tt.want {
+				t.Fatalf("PrizePool() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPercentPrizeAmounts(t *testing.T) {
+	tests := []struct {
+		name    string
+		pool    int
+		payouts []PercentPayout
+		want    []int
+	}{
+		{
+			name: "remainder goes to the largest fraction",
+			pool: 101,
+			payouts: []PercentPayout{
+				{Place: 1, Percent: 50},
+				{Place: 2, Percent: 30},
+				{Place: 3, Percent: 20},
+			},
+			want: []int{51, 30, 20},
+		},
+		{
+			name: "even split",
+			pool: 100,
+			payouts: []PercentPayout{
+				{Place: 1, Percent: 33},
+				{Place: 2, Percent: 33},
+				{Place: 3, Percent: 34},
+			},
+			want: []int{33, 33, 34},
+		},
+		{
+			name: "equal remainders favour the lower place",
+			pool: 3,
+			payouts: []PercentPayout{
+				{Place: 1, Percent: 50},
+				{Place: 2, Percent: 50},
+			},
+			want: []int{2, 1},
+		},
+		{
+			name: "small pool can leave a place at zero",
+			pool: 1,
+			payouts: []PercentPayout{
+				{Place: 1, Percent: 50},
+				{Place: 2, Percent: 50},
+			},
+			want: []int{1, 0},
+		},
+		{
+			name: "whole pool",
+			pool: 7,
+			payouts: []PercentPayout{
+				{Place: 1, Percent: 100},
+			},
+			want: []int{7},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			amounts := percentPrizeAmounts(tt.pool, tt.payouts)
+
+			for i, want := range tt.want {
+				place := i + 1
+				if got := amounts[place]; got != want {
+					t.Fatalf("place %d amount = %d, want %d", place, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPercentPrizeAmountsDistributeWholePool(t *testing.T) {
+	structures := [][]PercentPayout{
+		{
+			{Place: 1, Percent: 50},
+			{Place: 2, Percent: 30},
+			{Place: 3, Percent: 20},
+		},
+		{
+			{Place: 1, Percent: 33},
+			{Place: 2, Percent: 33},
+			{Place: 3, Percent: 34},
+		},
+		{
+			{Place: 1, Percent: 60},
+			{Place: 2, Percent: 40},
+		},
+		{
+			{Place: 1, Percent: 40},
+			{Place: 2, Percent: 30},
+			{Place: 3, Percent: 20},
+			{Place: 4, Percent: 10},
+		},
+	}
+
+	for _, payouts := range structures {
+		for pool := 0; pool <= 200; pool++ {
+			amounts := percentPrizeAmounts(pool, payouts)
+			total := 0
+
+			for _, payout := range payouts {
+				if amounts[payout.Place] < 0 {
+					t.Fatalf("pool %d place %d amount = %d, want non-negative", pool, payout.Place, amounts[payout.Place])
+				}
+
+				total += amounts[payout.Place]
+			}
+
+			if total != pool {
+				t.Fatalf("pool %d amounts %+v total = %d, want %d", pool, amounts, total, pool)
+			}
+		}
+	}
+}
+
+func TestAwardPrizesByMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		rules  func() *TournamentRules
+		places []int
+		want   []int
+	}{
+		{
+			name: "legacy fixed payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Payouts = []Payout{
+					{Place: 1, Amount: 30},
+					{Place: 2, Amount: 10},
+				}
+				return r
+			},
+			places: []int{1, 2, 3},
+			want:   []int{30, 10, 0},
+		},
+		{
+			name: "fixed payouts funded by a buy-in",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = []Payout{
+					{Place: 1, Amount: 200},
+					{Place: 2, Amount: 50},
+				}
+				return r
+			},
+			places: []int{1, 2, 3},
+			want:   []int{200, 50, 0},
+		},
+		{
+			name: "percent payouts",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = nil
+				r.PayoutMode = PayoutModePercent
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 2, Percent: 30},
+					{Place: 3, Percent: 20},
+				}
+				return r
+			},
+			places: []int{1, 2, 3},
+			want:   []int{150, 90, 60},
+		},
+		{
+			name: "winner takes all",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = nil
+				r.PayoutMode = PayoutModeWinnerTakeAll
+				return r
+			},
+			places: []int{1, 2, 3},
+			want:   []int{300, 0, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, err := normalizeRules(tt.rules())
+			if err != nil {
+				t.Fatalf("normalizeRules: %v", err)
+			}
+
+			entries := make([]*entry, len(tt.places))
+			for i, place := range tt.places {
+				entries[i] = testEntry(string(rune('a'+i)), i, place)
+			}
+
+			tour := &Tournament{rules: normalized, entries: entries}
+			tour.awardPrizesLocked()
+
+			for i, want := range tt.want {
+				if got := entries[i].prize; got != want {
+					t.Fatalf("entry %d prize = %d, want %d", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAwardPrizesSplitsPercentTies(t *testing.T) {
+	rules := &TournamentRules{
+		StartingStack: 100,
+		Guarantee:     101,
+		Levels: []BlindLevel{
+			{SmallBlind: 1, BigBlind: 2, Hands: 2},
+		},
+		PayoutMode: PayoutModePercent,
+		PercentPayouts: []PercentPayout{
+			{Place: 1, Percent: 60},
+			{Place: 2, Percent: 40},
+		},
+	}
+
+	normalized, err := normalizeRules(rules)
+	if err != nil {
+		t.Fatalf("normalizeRules: %v", err)
+	}
+
+	a := testEntry("a", 0, 1)
+	b := testEntry("b", 1, 1)
+
+	tour := &Tournament{rules: normalized, entries: []*entry{a, b}}
+	tour.awardPrizesLocked()
+
+	// Places 1 and 2 are worth 61 and 40 after rounding; the tied players
+	// split 101 evenly and the odd unit follows registration order.
+	if a.prize != 51 || b.prize != 50 {
+		t.Fatalf("tied percent prizes = a:%d b:%d, want a:51 b:50", a.prize, b.prize)
+	}
+}
+
+func TestAwardPrizesSplitsZeroPrizePlace(t *testing.T) {
+	rules := &TournamentRules{
+		StartingStack: 100,
+		Guarantee:     1,
+		Levels: []BlindLevel{
+			{SmallBlind: 1, BigBlind: 2, Hands: 2},
+		},
+		PayoutMode: PayoutModePercent,
+		PercentPayouts: []PercentPayout{
+			{Place: 1, Percent: 50},
+			{Place: 2, Percent: 50},
+		},
+	}
+
+	normalized, err := normalizeRules(rules)
+	if err != nil {
+		t.Fatalf("normalizeRules: %v", err)
+	}
+
+	winner := testEntry("winner", 0, 1)
+	first := testEntry("first", 1, 2)
+	second := testEntry("second", 2, 2)
+
+	tour := &Tournament{
+		rules:   normalized,
+		entries: []*entry{winner, first, second},
+	}
+	tour.awardPrizesLocked()
+
+	// The whole pool is one unit, so place 2 is worth zero.
+	if winner.prize != 1 {
+		t.Fatalf("winner prize = %d, want 1", winner.prize)
+	}
+
+	if first.prize != 0 || second.prize != 0 {
+		t.Fatalf("tied zero-prize places = %d/%d, want 0/0", first.prize, second.prize)
+	}
+}
+
+func TestRulesCopiesPercentPayouts(t *testing.T) {
+	rules := percentRules()
+	rules.PercentPayouts = []PercentPayout{
+		{Place: 2, Percent: 40},
+		{Place: 1, Percent: 60},
+	}
+
+	tour := mustNewTournament(t, rules)
+
+	got := tour.Rules()
+	if len(got.PercentPayouts) != 2 ||
+		got.PercentPayouts[0].Place != 1 ||
+		got.PercentPayouts[1].Place != 2 {
+		t.Fatalf("PercentPayouts = %+v, want places sorted 1,2", got.PercentPayouts)
+	}
+
+	got.PercentPayouts[0].Percent = 1
+
+	again := tour.Rules()
+	if again.PercentPayouts[0].Percent != 60 {
+		t.Fatalf("Rules() shares PercentPayouts with its caller: %+v", again.PercentPayouts)
+	}
+}
+
+func TestStartValidatesPayoutFunding(t *testing.T) {
+	tests := []struct {
+		name    string
+		rules   func() *TournamentRules
+		players []string
+		wantErr bool
+	}{
+		{
+			name: "fixed payouts fit the pool",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = []Payout{
+					{Place: 1, Amount: 200},
+					{Place: 2, Amount: 50},
+				}
+				return r
+			},
+			players: []string{"alice", "bob", "carol"},
+		},
+		{
+			name: "fixed payouts funded by a guarantee",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.Guarantee = 300
+				r.Payouts = []Payout{
+					{Place: 1, Amount: 200},
+					{Place: 2, Amount: 50},
+				}
+				return r
+			},
+			players: []string{"alice", "bob"},
+		},
+		{
+			name: "fixed payouts exceed the pool",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = []Payout{
+					{Place: 1, Amount: 200},
+					{Place: 2, Amount: 50},
+				}
+				return r
+			},
+			players: []string{"alice", "bob"},
+			wantErr: true,
+		},
+		{
+			name: "percent places fit the entries",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 2, Percent: 30},
+					{Place: 3, Percent: 20},
+				}
+				return r
+			},
+			players: []string{"alice", "bob", "carol"},
+		},
+		{
+			name: "percent places exceed the entries",
+			rules: func() *TournamentRules {
+				r := percentRules()
+				r.PercentPayouts = []PercentPayout{
+					{Place: 1, Percent: 50},
+					{Place: 2, Percent: 30},
+					{Place: 3, Percent: 20},
+				}
+				return r
+			},
+			players: []string{"alice", "bob"},
+			wantErr: true,
+		},
+		{
+			name: "winner-take-all starts with two entries",
+			rules: func() *TournamentRules {
+				r := validRules()
+				r.BuyIn = 100
+				r.Payouts = nil
+				r.PayoutMode = PayoutModeWinnerTakeAll
+				return r
+			},
+			players: []string{"alice", "bob"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tour := mustNewTournament(t, tt.rules())
+			registerPlayers(t, tour, tt.players...)
+
+			err := tour.Start()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Start accepted an unfunded payout")
+				}
+
+				if tour.State() != StateRegistering {
+					t.Fatalf("State = %s after a rejected Start, want %s", tour.State(), StateRegistering)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+		})
 	}
 }
