@@ -17,6 +17,7 @@ type Player struct {
 	pocketCards        []*Card
 	acted              bool
 	allIn              bool
+	sittingOut         bool
 	mu                 sync.RWMutex
 }
 
@@ -70,6 +71,33 @@ func (p *Player) IsAllIn() bool {
 	defer p.mu.RUnlock()
 
 	return p.allIn
+}
+
+// IsSittingOut reports whether the player has asked to sit out. A player
+// who is sitting out is inactive and is not dealt into the next hand.
+func (p *Player) IsSittingOut() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.sittingOut
+}
+
+// setSittingOut updates the sit-out flag and keeps Active consistent:
+// sitting out deactivates the player, sitting in reactivates a funded
+// player. It is used by the table between hands.
+func (p *Player) setSittingOut(sittingOut bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.sittingOut = sittingOut
+
+	if sittingOut {
+		p.Active = false
+
+		return
+	}
+
+	p.Active = p.currentChipsAmount > 0
 }
 
 // HasActed reports whether the player has acted since the last full raise
@@ -157,6 +185,26 @@ func (p *Player) addChips(amount Chips) error {
 	}
 
 	p.currentChipsAmount += amount
+
+	return nil
+}
+
+// addChipsForLifecycle adds chips outside a hand (for example a tournament
+// add-on) and reactivates the player for the next hand unless they are
+// sitting out. The all-in flag is not touched.
+func (p *Player) addChipsForLifecycle(amount Chips) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if amount < 0 {
+		return fmt.Errorf("negative chip amount %d", amount)
+	}
+
+	p.currentChipsAmount += amount
+
+	if !p.sittingOut && p.currentChipsAmount > 0 {
+		p.Active = true
+	}
 
 	return nil
 }
@@ -257,13 +305,13 @@ func (p *Player) Raise(bet *Bet) (Chips, error) {
 }
 
 // ResetForHand clears the pocket cards and per-hand state. A player with
-// chips is reactivated; a player with an empty stack sits the hand out.
-// Chips are not changed.
+// chips who is not sitting out is reactivated; an empty stack or a sit-out
+// sits the hand out. Chips are not changed.
 func (p *Player) ResetForHand() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.Active = p.currentChipsAmount > 0
+	p.Active = p.currentChipsAmount > 0 && !p.sittingOut
 	p.pocketCards = make([]*Card, 0)
 	p.streetBet = 0
 	p.acted = false
