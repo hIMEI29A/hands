@@ -6,7 +6,7 @@ Texas Hold'em poker game library for Go.
 
 ## Current version
 
-v0.5.0-alpha
+v0.6.0-alpha
 
 ## Usage
 
@@ -17,19 +17,19 @@ import (
 	"fmt"
 	"log"
 
-	"hands/src/models"
+	"hands/src/engine"
 )
 
 func main() {
 	// Strict card parsing: invalid input returns an error.
-	card, err := models.ParseCard("10H")
+	card, err := engine.ParseCard("10H")
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println(card) // 10H
 
 	// Build and rank a hand; constructor errors on bad or duplicate cards.
-	hand, err := models.NewHandFromStrings([]string{"AS", "KS", "QS", "JS", "10S"})
+	hand, err := engine.NewHandFromStrings([]string{"AS", "KS", "QS", "JS", "10S"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func main() {
 	fmt.Println(hand.Compare(hand)) // 0 (equal)
 
 	// Shuffle a fresh 52-card deck.
-	deck := models.NewDeck().Shuffle()
+	deck := engine.NewDeck().Shuffle()
 	fmt.Println(deck.Len()) // 52
 }
 ```
@@ -48,19 +48,19 @@ func main() {
 turn order, all-ins and side pots.
 
 ```go
-rules := models.DefaultTableRules(1, 2) // small blind, big blind
+rules := engine.DefaultTableRules(1, 2) // small blind, big blind
 rules.Ante = 1                          // 1 chip from every active player
-// rules.AnteMode = models.AnteBigBlind // or only from the big blind
+// rules.AnteMode = engine.AnteBigBlind // or only from the big blind
 
-table, err := models.NewTableWithRules(
-	"main", "cash", nil, models.CashTableType, 6, rules,
+table, err := engine.NewTableWithRules(
+	"main", "cash", nil, engine.CashTableType, 6, rules,
 )
 if err != nil {
 	log.Fatal(err)
 }
 
 for _, name := range []string{"alice", "bob", "carol"} {
-	if err := table.Register(models.NewPlayerWithDefaultID(name, 200)); err != nil {
+	if err := table.Register(engine.NewPlayerWithDefaultID(name, 200)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -72,8 +72,8 @@ if _, err := table.StartHand(); err != nil {
 }
 
 // Play every street, checking or calling for illustration.
-for table.Phase() != models.PhaseShowdown {
-	for table.Phase() == models.PhaseBetting {
+for table.Phase() != engine.PhaseShowdown {
+	for table.Phase() == engine.PhaseBetting {
 		actor, err := table.CurrentActor()
 		if err != nil {
 			log.Fatal(err)
@@ -84,9 +84,9 @@ for table.Phase() != models.PhaseShowdown {
 			log.Fatal(err)
 		}
 
-		action := models.Action{PlayerID: actor.ID, Type: models.ActionCheck}
+		action := engine.Action{PlayerID: actor.ID, Type: engine.ActionCheck}
 		if toCall > 0 {
-			action.Type = models.ActionCall
+			action.Type = engine.ActionCall
 		}
 
 		if _, err := table.Act(action); err != nil {
@@ -112,8 +112,8 @@ for _, pot := range results {
 ```
 
 Antes are optional and controlled by `TableRules.Ante` (0 disables them).
-`TableRules.AnteMode` selects `models.AntePerPlayer` (the default) so every
-active player posts, or `models.AnteBigBlind` so only the big blind posts.
+`TableRules.AnteMode` selects `engine.AntePerPlayer` (the default) so every
+active player posts, or `engine.AnteBigBlind` so only the big blind posts.
 Antes are **dead money** posted before the blinds: they go into the pot but
 do not count toward `streetBet`, `currentBet`, `ToCall`, the minimum raise or
 the raise cap. A short stack posts `min(ante, stack)` and is all-in for the
@@ -129,6 +129,98 @@ when it uses the rest of the player's stack.
 per-player vs big-blind mode), minimum raise, optional per-street raise cap
 and odd-chip rule. Only no-limit Hold'em is supported; straddles are not part
 of the current API.
+
+## Tournament SNG
+
+`src/tournament` adds a single-table freezeout sit-and-go on top of `Table`.
+Blind levels advance by **completed hands**, not wall-clock time. A fixed
+`Payout` table awards abstract prize units; prizes are not tournament chips.
+With `hands/src/engine` and `hands/src/tournament` imported:
+
+```go
+rules := &tournament.TournamentRules{
+	StartingStack: 1000,
+	MinPlayers:    2, // default 2
+	MaxPlayers:    6, // default 9
+	Levels: []tournament.BlindLevel{
+		{SmallBlind: 10, BigBlind: 20, Hands: 10},
+		{SmallBlind: 15, BigBlind: 30, Ante: 5, Hands: 10},
+	},
+	Payouts: []tournament.Payout{
+		{Place: 1, Amount: 60},
+		{Place: 2, Amount: 30},
+	},
+}
+
+tour, err := tournament.NewTournament("sng", "sng", nil, rules)
+if err != nil {
+	log.Fatal(err)
+}
+
+for _, name := range []string{"alice", "bob", "carol"} {
+	if _, err := tour.Register(name); err != nil {
+		log.Fatal(err)
+	}
+}
+
+if err := tour.Start(); err != nil {
+	log.Fatal(err)
+}
+
+for tour.State() != tournament.StateFinished {
+	if err := tour.StartHand(); err != nil {
+		log.Fatal(err)
+	}
+
+	for tour.Table().Phase() != engine.PhaseShowdown {
+		if tour.Table().Phase() == engine.PhaseStreetComplete {
+			if err := tour.NextStreet(); err != nil {
+				log.Fatal(err)
+			}
+			continue
+		}
+
+		actor, err := tour.Table().CurrentActor()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		toCall, err := tour.Table().ToCall(actor.ID)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		action := engine.Action{PlayerID: actor.ID, Type: engine.ActionCheck}
+		if toCall > 0 {
+			action.Type = engine.ActionCall
+		}
+
+		if _, err := tour.Act(action); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if _, err := tour.Showdown(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+for _, standing := range tour.Standings() {
+	fmt.Println(standing.Place, standing.Name, standing.Prize)
+}
+```
+
+`BlindLevel.Hands` counts completed hands; a hand that starts on a level
+finishes on that level. The last level repeats indefinitely. Payout places
+must be contiguous starting at 1. A player eliminated with a larger
+start-of-hand stack receives the better place; equal stacks share a place and
+split the payout places they consume, with any remainder going clockwise from
+the dealer. `Tournament.Table()` exposes the underlying table for read-only
+inspection; use `Act`, `NextStreet` and `Showdown` to mutate tournament play.
+
+Only single-table freezeout SNGs are implemented: no MTT, rebuy, re-entry,
+late registration, bounties, hand-for-hand play or ICM. `Payout.Amount` is an
+abstract `int` prize unit; buy-in and prize-pool accounting are out of scope.
 
 ## Development
 
