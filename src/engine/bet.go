@@ -1,4 +1,4 @@
-package models
+package engine
 
 // Bet is the legacy call/raise amount holder used by the old Player
 // helpers.
